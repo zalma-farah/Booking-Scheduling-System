@@ -243,39 +243,5 @@ Create API routes for resources, availability, and bookings. Validate requests, 
 Create the Supabase tables and relationships, configure authentication, store user roles, configure database permissions, prevent duplicate bookings, create test data, and test the database.
 
 ## User Flow
-Open application
-    └─ Session active? ──yes──▶ Dashboard by role
-             │no
-             ▼
-       Log in or register (or reset password)
-             │
-             ▼
-       Verify and load role
-             │
-             ▼
-       Dashboard by role
-             ├─ User ──▶ Choose an action
-             │              ├─ Make a booking
-             │              │     └─ Select resource and time
-             │              │           └─ Available? ──no──▶ Suggest alternates ──▶ (back to) Select resource and time
-             │              │                 │yes
-             │              │                 ▼
-             │              │           Review and confirm
-             │              │                 └─ Submit booking
-             │              │                       └─ Slot still open? ──no──▶ (back to) Available?
-             │              │                             │yes
-             │              │                             ▼
-             │              │                       Booking confirmed -> Back to Dashboard
-             │              │
-             │              └─ View bookings
-             │                    └─ Open my bookings
-             │                          └─ Select a booking
-             │                                ├─ Reschedule ──▶ (back to) Select resource and time
-             │                                └─ Cancel ──▶ Confirm cancellation? ──yes──▶ Cancel and reopen slot ──▶ Open my bookings
-             │                                                                   └─no──▶ Open my bookings
-             │
-             └─ Administrator ──▶ Administrator dashboard
-                                        		├─ Manage locations and resources ──▶ (back to) Administrator dashboard
-                                        		├─ Create available time slots ──▶ (back to) Administrator dashboard
-                                        		├─ Manage all reservations ──▶ (back to) Administrator dashboard
-                                        		└─ Manage users ──▶ (back to) Administrator dashboard
+<img width="841" height="649" alt="Screenshot 2026-09-26 at 8 55 40 AM" src="https://github.com/user-attachments/assets/46805f86-7fae-421d-9e40-6eda484bc236" />
+
