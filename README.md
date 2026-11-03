@@ -1,21 +1,26 @@
-# Booking and Scheduling System(Basic Version)
+# Booking and Scheduling System
 
-A web-based application that allows users to view available resources and time slots, make reservations, and manage their bookings.
+A web application that allows users to view resources, check available time slots, make reservations, and manage their bookings.
 
-Administrators can manage users, resources, availability, and reservations.
+Administrators can manage locations, resources, availability, users, and reservations.
 
 ## Project Status
 
-The initial project configuration is complete. Feature development is currently in progress.
-
-Currently working:
+The project foundation is complete, including:
 
 - React and Vite frontend
-- Flask backend
-- React Router installation
-- Flask CORS configuration
-- Backend health-check endpoint
-- Git and GitHub workflow
+- React Router
+- Tailwind CSS
+- shadcn/ui with Radix UI
+- Python and Flask backend
+- React-to-Flask API connection
+- Flask-to-Supabase connection
+- Supabase PostgreSQL database schema
+- Supabase Authentication foundation
+- Environment-variable configuration
+- GitHub feature-branch workflow
+
+The current development stage is authentication and user-interface implementation.
 
 ## Technology Stack
 
@@ -23,9 +28,11 @@ Currently working:
 
 - React
 - Vite
-- React Router
 - JavaScript
-- CSS
+- React Router
+- Tailwind CSS
+- shadcn/ui
+- Radix UI
 
 ### Backend
 
@@ -44,12 +51,12 @@ Currently working:
 
 ### User
 
-A regular user will be able to:
+A user will be able to:
 
 - Create an account and log in
 - View locations and resources
 - View available dates and times
-- Make a booking
+- Create a booking
 - View their bookings
 - Cancel their own bookings
 
@@ -65,28 +72,32 @@ An administrator will be able to:
 
 ## System Rules
 
-- Users must log in before making a booking.
+- Users must log in before creating a booking.
 - A time slot cannot be booked twice.
+- Overlapping time slots for the same resource are not allowed.
 - Users can only cancel their own reservations.
 - Administrators can manage every reservation.
-- A canceled time slot becomes available again.
+- A cancelled time slot becomes available again.
+- Booking history is preserved.
 
 ## System Architecture
 
-The React frontend sends HTTP requests to the Flask backend.
-
-The Flask backend validates each request, communicates with Supabase, and returns a JSON response to the frontend.
-
 ```text
-React frontend
-      |
-      | HTTP/JSON
-      v
-Flask backend
-      |
-      v
-Supabase database and authentication
+React and Vite frontend
+          |
+          | HTTP/JSON
+          v
+      Flask API
+          |
+          v
+Supabase Authentication and PostgreSQL
 ```
+
+The React frontend displays the application interface and sends requests to Flask.
+
+Flask validates requests, applies application rules, communicates with Supabase, and returns JSON responses.
+
+Supabase stores users, locations, resources, time slots, and bookings.
 
 ## Project Structure
 
@@ -95,10 +106,21 @@ Booking-Scheduling-System/
 ├── frontend/
 │   ├── public/
 │   ├── src/
-│   └── package.json
+│   │   ├── components/
+│   │   │   └── ui/
+│   │   ├── lib/
+│   │   ├── App.jsx
+│   │   └── index.css
+│   ├── components.json
+│   ├── jsconfig.json
+│   ├── package.json
+│   └── vite.config.js
 ├── backend/
 │   ├── app.py
-│   └── requirements.txt
+│   ├── requirements.txt
+│   └── .env.example
+├── database/
+│   └── schema.sql
 ├── .gitignore
 └── README.md
 ```
@@ -127,10 +149,22 @@ Enter the frontend folder:
 cd frontend
 ```
 
-Install the frontend packages:
+Install the packages:
 
 ```bash
 npm install
+```
+
+Create the frontend environment file:
+
+```bash
+cp .env.example .env
+```
+
+The frontend `.env` should contain:
+
+```env
+VITE_API_URL=http://127.0.0.1:5000
 ```
 
 Start the frontend:
@@ -143,13 +177,13 @@ Vite will display the local frontend address in the terminal.
 
 ## Backend Setup
 
-From the project root, enter the backend folder:
+Open another terminal and enter the backend folder:
 
 ```bash
 cd backend
 ```
 
-Create a virtual environment:
+Create a Python virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -167,7 +201,20 @@ Install the backend packages:
 python3 -m pip install -r requirements.txt
 ```
 
-Start the Flask server:
+Create the backend environment file:
+
+```bash
+cp .env.example .env
+```
+
+Add the Supabase project values:
+
+```env
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_key
+```
+
+Start Flask:
 
 ```bash
 python3 app.py
@@ -179,31 +226,80 @@ The backend runs at:
 http://127.0.0.1:5000
 ```
 
-Test the backend health endpoint at:
+## API Health Checks
+
+Test the Flask server:
 
 ```text
 http://127.0.0.1:5000/api/health
 ```
 
-## Environment Variables
+Test the Supabase connection:
 
-Supabase credentials will be stored in `backend/.env`.
+```text
+http://127.0.0.1:5000/api/supabase-health
+```
 
-The `.env` file must never be committed to GitHub because it may contain private keys.
+## Database Setup
 
-Supabase configuration will be added during the database integration stage.
+1. Create a Supabase project.
+2. Open the Supabase SQL Editor.
+3. Copy the contents of `database/schema.sql`.
+4. Run the schema in the SQL Editor.
+5. Add the Supabase URL and publishable key to `backend/.env`.
+
+The schema creates:
+
+- User profiles
+- Locations
+- Resources
+- Time slots
+- Bookings
+- User and administrator roles
+- Row-level security policies
+- Double-booking protection
+- Overlapping-time-slot protection
+
+## Environment Variable Safety
+
+Never commit `.env` files to GitHub.
+
+Only `.env.example` files containing placeholders should be committed.
+
+Never place a Supabase secret or service-role key in frontend code.
+
+## Frontend Quality Checks
+
+Run ESLint:
+
+```bash
+npm run lint
+```
+
+Create a production build:
+
+```bash
+npm run build
+```
+
+Both commands should pass before opening a pull request.
 
 ## Git Workflow
 
-Create a separate branch before beginning new work:
+Update your local `main` branch:
 
 ```bash
 git switch main
 git pull origin main
+```
+
+Create a feature branch:
+
+```bash
 git switch -c your-name-feature
 ```
 
-After making changes:
+After completing and testing the work:
 
 ```bash
 git add .
@@ -211,37 +307,21 @@ git commit -m "Describe your changes"
 git push -u origin your-name-feature
 ```
 
-Create a pull request on GitHub so the work can be reviewed before being merged into `main`.
+Create a pull request so another team member can review the changes before merging them into `main`.
 
 ## Next Development Steps
 
-- Connect the React frontend to Flask
-- Configure Supabase environment variables
-- Connect Flask to Supabase
-- Create the database tables
-- Implement authentication
-- Create user and administrator pages
-- Implement booking and cancellation
-- Prevent duplicate bookings
+- Create registration and login pages
+- Connect the login forms to Supabase Authentication
+- Add protected routes
+- Add user and administrator navigation
+- Create location and resource pages
+- Display available time slots
+- Implement booking creation
+- Implement booking cancellation
+- Create participant and administrator dashboards
+- Complete integration testing
 
+## User Workflow
 
-
-#Roles:
-1._Configuration and Integration
-Create the GitHub repository, configure React and Flask, manage branches, configure Flask-CORS and .env files, create the first React-to-Flask connection, maintain the README, integrate everyone’s work, and coordinate integration testing.
-
-2._Participant Frontend
-Create registration and login screens, the search page, availability calendar, booking form, participant dashboard, and booking cancellation interface.
-
-3._Organizer and Administrator Frontend
-Create the organizer dashboard, resource creation page, availability management, reservation list, simple administrator page, shared CSS, and navigation.
-
-4._Backend/API
-Create API routes for resources, availability, and bookings. Validate requests, verify user roles, implement booking and cancellation rules, and return appropriate error responses.
-
-5._Database and Authentication
-Create the Supabase tables and relationships, configure authentication, store user roles, configure database permissions, prevent duplicate bookings, create test data, and test the database.
-
-## User Flow
-<img width="841" height="649" alt="Screenshot 2026-09-26 at 8 55 40 AM" src="https://github.com/user-attachments/assets/46805f86-7fae-421d-9e40-6eda484bc236" />
-
+![Booking and Scheduling System user workflow](https://github.com/user-attachments/assets/46805f86-7fae-421d-9e40-6eda484bc236)
