@@ -1,12 +1,70 @@
-import { UserPlus } from 'lucide-react'
+import { useState } from 'react'
+import { LoaderCircle, UserPlus } from 'lucide-react'
 import { Link } from 'react-router'
+import { supabase } from '@/lib/supabase'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 function RegisterPage() {
-  function handleSubmit(event) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+
+  async function handleSubmit(event) {
     event.preventDefault()
+
+    setErrorMessage('')
+    setSuccessMessage('')
+
+    if (password !== confirmPassword) {
+      setErrorMessage('The passwords do not match.')
+      return
+    }
+
+    if (password.length < 6) {
+      setErrorMessage('Password must contain at least 6 characters.')
+      return
+    }
+
+    setIsLoading(true)
+
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/login`,
+        },
+      })
+
+      if (error) {
+        throw error
+      }
+
+      if (data.session) {
+        setSuccessMessage(
+          'Your account was created and you are signed in.'
+        )
+      } else {
+        setSuccessMessage(
+          'Account created. Check your email to confirm your account.'
+        )
+      }
+
+      setPassword('')
+      setConfirmPassword('')
+    } catch (error) {
+      setErrorMessage(
+        error.message || 'The account could not be created.'
+      )
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -36,6 +94,18 @@ function RegisterPage() {
               </p>
             </div>
 
+            {errorMessage && (
+              <Alert className="mb-5" variant="destructive">
+                <AlertDescription>{errorMessage}</AlertDescription>
+              </Alert>
+            )}
+
+            {successMessage && (
+              <Alert className="mb-5 border-green-200 bg-green-50 text-green-900">
+                <AlertDescription>{successMessage}</AlertDescription>
+              </Alert>
+            )}
+
             <form className="space-y-5" onSubmit={handleSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="register-email">Email address</Label>
@@ -47,6 +117,9 @@ function RegisterPage() {
                   type="email"
                   autoComplete="email"
                   placeholder="name@example.com"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  disabled={isLoading}
                   required
                 />
               </div>
@@ -60,6 +133,9 @@ function RegisterPage() {
                   name="password"
                   type="password"
                   autoComplete="new-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  disabled={isLoading}
                   minLength={6}
                   required
                 />
@@ -78,6 +154,11 @@ function RegisterPage() {
                   name="confirmPassword"
                   type="password"
                   autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) =>
+                    setConfirmPassword(event.target.value)
+                  }
+                  disabled={isLoading}
                   minLength={6}
                   required
                 />
@@ -86,8 +167,13 @@ function RegisterPage() {
               <Button
                 className="h-11 w-full bg-[#4f654d] text-white hover:bg-[#3f523e]"
                 type="submit"
+                disabled={isLoading}
               >
-                Create account
+                {isLoading && (
+                  <LoaderCircle className="animate-spin" />
+                )}
+
+                {isLoading ? 'Creating account...' : 'Create account'}
               </Button>
             </form>
 
