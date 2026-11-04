@@ -4,21 +4,30 @@ import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 
 function DashboardPage() {
-  const { user, signOut } = useAuth()
+  const { user, role, profileError, signOut } = useAuth()
   const navigate = useNavigate()
+
   const [error, setError] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
 
   async function handleSignOut() {
     setError('')
+    setSigningOut(true)
 
-    const { error: signOutError } = await signOut()
+    try {
+      const { error: signOutError } = await signOut()
 
-    if (signOutError) {
-      setError(signOutError.message)
-      return
+      if (signOutError) {
+        setError(signOutError.message)
+        return
+      }
+
+      navigate('/login', { replace: true })
+    } catch {
+      setError('Unable to sign out. Please try again.')
+    } finally {
+      setSigningOut(false)
     }
-
-    navigate('/login', { replace: true })
   }
 
   return (
@@ -32,19 +41,33 @@ function DashboardPage() {
           Welcome to your dashboard
         </h1>
 
-        <p className="mt-4 text-muted-foreground">
+        <p className="mt-4 break-words text-muted-foreground">
           Signed in as {user?.email}
         </p>
 
+        <p className="mt-2 text-muted-foreground">
+          Role: {role ?? 'Unavailable'}
+        </p>
+
+        {profileError && (
+          <p role="alert" className="mt-4 text-sm text-red-600">
+            {profileError}
+          </p>
+        )}
+
         {error && (
-          <p className="mt-4 text-sm text-red-600">{error}</p>
+          <p role="alert" className="mt-4 text-sm text-red-600">
+            {error}
+          </p>
         )}
 
         <Button
           className="mt-8 bg-violet-600 text-white hover:bg-violet-700"
+          type="button"
           onClick={handleSignOut}
+          disabled={signingOut}
         >
-          Sign out
+          {signingOut ? 'Signing out...' : 'Sign out'}
         </Button>
       </section>
     </main>
