@@ -1,18 +1,15 @@
 import { useState } from 'react'
 import { CalendarDays, LoaderCircle } from 'lucide-react'
-import { Link, useLocation, useNavigate } from 'react-router'
+import { Link, Navigate } from 'react-router'
 import { supabase } from '@/lib/supabase'
-import {
-  Alert,
-  AlertDescription,
-} from '@/components/ui/alert'
+import { useAuth } from '@/hooks/useAuth'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 function LoginPage() {
-  const navigate = useNavigate()
-  const location = useLocation()
+  const { user, loading: authLoading, isAdmin } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -34,13 +31,7 @@ function LoginPage() {
 
       if (signInError) {
         setError(signInError.message)
-        return
       }
-
-      const destination =
-        location.state?.from || '/dashboard'
-
-      navigate(destination, { replace: true })
     } catch {
       setError('Unable to sign in. Please try again.')
     } finally {
@@ -48,12 +39,34 @@ function LoginPage() {
     }
   }
 
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#eef3ec]">
+        <div role="status" className="flex items-center gap-3">
+          <LoaderCircle className="size-5 animate-spin" />
+          <p>Checking your account...</p>
+        </div>
+      </main>
+    )
+  }
+
+  if (user) {
+    return (
+      <Navigate
+        to={isAdmin ? '/admin' : '/dashboard'}
+        replace
+      />
+    )
+  }
+
   return (
     <main className="min-h-screen bg-[#eef3ec] p-4 sm:p-8">
       <section className="mx-auto grid min-h-[calc(100vh-2rem)] max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl sm:min-h-[calc(100vh-4rem)] md:grid-cols-[1.05fr_0.95fr]">
         <aside className="relative hidden overflow-hidden bg-gradient-to-br from-[#4f3d78] via-[#6d55a3] to-[#8b72b8] p-8 text-white md:flex md:flex-col md:justify-between lg:p-12">
           <div className="absolute -right-24 -top-24 size-72 rounded-full border border-white/20" />
+
           <div className="absolute -bottom-32 -left-20 size-96 rounded-full bg-[#a8bfa3]/30" />
+
           <div className="absolute bottom-20 right-16 size-32 rounded-full border border-white/20" />
 
           <div className="relative z-10 flex items-center gap-3">
@@ -71,9 +84,9 @@ function LoginPage() {
               Welcome back
             </p>
 
-            <h1 className="text-4xl font-bold leading-tight lg:text-5xl">
+            <h2 className="text-4xl font-bold leading-tight lg:text-5xl">
               Your reservations, all in one place.
-            </h1>
+            </h2>
 
             <p className="mt-6 text-base leading-relaxed text-purple-100 lg:text-lg">
               Find available locations and resources, select a time, and
@@ -99,9 +112,9 @@ function LoginPage() {
             </div>
 
             <div className="mb-8">
-              <h2 className="text-3xl font-bold tracking-tight">
+              <h1 className="text-3xl font-bold tracking-tight">
                 Sign in
-              </h2>
+              </h1>
 
               <p className="mt-2 text-sm text-muted-foreground">
                 Enter your account information to continue.
