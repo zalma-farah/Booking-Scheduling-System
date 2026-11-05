@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
+import AuthApiCheck from '@/components/AuthApiCheck'
 
 function DashboardPage() {
   const { user, role, profileError, signOut } = useAuth()
@@ -60,6 +61,8 @@ function DashboardPage() {
             {error}
           </p>
         )}
+
+        <AuthApiCheck />
 
         <Button
           className="mt-8 bg-violet-600 text-white hover:bg-violet-700"

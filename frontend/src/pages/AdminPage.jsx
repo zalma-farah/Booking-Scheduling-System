@@ -1,5 +1,6 @@
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
+import AuthApiCheck from '@/components/AuthApiCheck'
 
 function AdminPage() {
   return (
@@ -16,6 +17,8 @@ function AdminPage() {
         <p className="mt-4 text-muted-foreground">
           Only active administrators can open this page.
         </p>
+
+        <AuthApiCheck />
 
         <Button className="mt-8" asChild>
           <Link to="/dashboard">Back to dashboard</Link>
