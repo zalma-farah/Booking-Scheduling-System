@@ -1,326 +1,378 @@
 # Booking and Scheduling System
 
-A web application that allows users to view resources, check available time slots, make reservations, and manage their bookings.
+A semester project for booking locations and resources.
 
-Administrators can manage locations, resources, availability, users, and reservations.
+The application uses React for the interface, Flask for the API, and Supabase for authentication and database storage.
 
-## Project Status
+## Current Status
 
-The project foundation is complete, including:
+Implemented:
 
-- React and Vite frontend
-- React Router
-- Tailwind CSS
-- shadcn/ui with Radix UI
-- Python and Flask backend
-- React-to-Flask API connection
-- Flask-to-Supabase connection
-- Supabase PostgreSQL database schema
-- Supabase Authentication foundation
-- Environment-variable configuration
-- GitHub feature-branch workflow
+- Account registration and email confirmation
+- Login and logout
+- Persistent login sessions
+- User and administrator roles
+- Protected frontend routes
+- Role-based login redirects
+- Flask access-token verification
+- Administrator-only API access
+- Inactive-account blocking in Flask and protected pages
+- Database schema and row-level security policies
+- Database constraints for overlapping slots and duplicate active bookings
 
-The current development stage is authentication and user-interface implementation.
+The current dashboards are placeholders with authentication test buttons.
+
+Still to implement:
+
+- Location and resource browsing
+- Administrator management forms
+- Available time-slot display
+- Booking creation, viewing, and cancellation
+- Automated tests
+- Production deployment on our own server
+
+Database booking rules exist, but the complete booking workflow still needs implementation and testing.
 
 ## Technology Stack
 
-### Frontend
+Frontend:
 
-- React
-- Vite
 - JavaScript
+- React and Vite
 - React Router
 - Tailwind CSS
-- shadcn/ui
-- Radix UI
+- shadcn/ui and Radix UI
 
-### Backend
+Backend:
 
-- Python
-- Flask
+- Python and Flask
 - Flask-CORS
 - HTTP/JSON API
 
-### Database and Authentication
+Database and authentication:
 
-- Supabase
-- PostgreSQL
 - Supabase Authentication
+- Supabase PostgreSQL
+- Row-level security
 
-## Application Roles
+## How the Application Connects
 
-### User
+React communicates directly with Supabase for registration, login, sessions, and profile loading.
 
-A user will be able to:
+For protected API requests, React sends an access token to Flask.
 
-- Create an account and log in
-- View locations and resources
-- View available dates and times
-- Create a booking
-- View their bookings
-- Cancel their own bookings
+Flask verifies the token with Supabase and checks the account's current role and active status. Database requests use the user's token so row-level security remains in effect.
 
-### Administrator
+## Project Folders
 
-An administrator will be able to:
+- `frontend/`: React application
+- `backend/`: Flask API
+- `database/schema.sql`: initial database schema
+- `README.md`: project setup and development guide
 
-- Manage users
-- Add and update locations
-- Add and update resources
-- Create available time slots
-- View and manage all reservations
+## Local Setup
 
-## System Rules
+Requirements:
 
-- Users must log in before creating a booking.
-- A time slot cannot be booked twice.
-- Overlapping time slots for the same resource are not allowed.
-- Users can only cancel their own reservations.
-- Administrators can manage every reservation.
-- A cancelled time slot becomes available again.
-- Booking history is preserved.
-
-## System Architecture
-
-```text
-React and Vite frontend
-          |
-          | HTTP/JSON
-          v
-      Flask API
-          |
-          v
-Supabase Authentication and PostgreSQL
-```
-
-The React frontend displays the application interface and sends requests to Flask.
-
-Flask validates requests, applies application rules, communicates with Supabase, and returns JSON responses.
-
-Supabase stores users, locations, resources, time slots, and bookings.
-
-## Project Structure
-
-```text
-Booking-Scheduling-System/
-├── frontend/
-│   ├── public/
-│   ├── src/
-│   │   ├── components/
-│   │   │   └── ui/
-│   │   ├── lib/
-│   │   ├── App.jsx
-│   │   └── index.css
-│   ├── components.json
-│   ├── jsconfig.json
-│   ├── package.json
-│   └── vite.config.js
-├── backend/
-│   ├── app.py
-│   ├── requirements.txt
-│   └── .env.example
-├── database/
-│   └── schema.sql
-├── .gitignore
-└── README.md
-```
-
-## Requirements
-
-Install the following before running the project:
-
-- Node.js
-- npm
-- Python 3
+- Node.js and npm
+- Python 3.11 recommended
 - Git
+- Access to the team's Supabase project
 
-## Clone the Repository
+Clone the repository:
 
 ```bash
 git clone https://github.com/zalma-farah/Booking-Scheduling-System.git
 cd Booking-Scheduling-System
 ```
 
-## Frontend Setup
+If you already have the repository, use your existing project folder.
 
-Enter the frontend folder:
+The following commands assume you are in the project root.
 
-```bash
-cd frontend
-```
+### Frontend
 
-Install the packages:
+Install dependencies:
 
 ```bash
-npm install
+npm --prefix frontend ci
 ```
 
-Create the frontend environment file:
+For a new setup, copy the environment template:
 
 ```bash
-cp .env.example .env
+cp frontend/.env.example frontend/.env
 ```
 
-The frontend `.env` should contain:
+Do not overwrite an existing working `.env`.
+
+Fill in `frontend/.env`:
 
 ```env
 VITE_API_URL=http://127.0.0.1:5000
+VITE_SUPABASE_URL=your_supabase_project_url
+VITE_SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_key
 ```
 
-Start the frontend:
+Use values from the team's Supabase project.
+
+Start React:
 
 ```bash
-npm run dev
+npm --prefix frontend run dev
 ```
 
-Vite will display the local frontend address in the terminal.
+Open the address printed by Vite, usually:
 
-## Backend Setup
-
-Open another terminal and enter the backend folder:
-
-```bash
-cd backend
+```text
+http://localhost:5173
 ```
 
-Create a Python virtual environment:
+Restart Vite after changing environment variables.
+
+### Backend
+
+Open a second terminal in the project root.
+
+For a new setup, create the Python environment:
 
 ```bash
-python3 -m venv .venv
+python3 -m venv backend/.venv
 ```
 
 Activate it on macOS or Linux:
 
 ```bash
-source .venv/bin/activate
+source backend/.venv/bin/activate
 ```
 
-Install the backend packages:
+Install dependencies:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r backend/requirements.txt
 ```
 
-Create the backend environment file:
+For a new setup, copy the environment template:
 
 ```bash
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-Add the Supabase project values:
+Do not overwrite an existing working `.env`.
+
+Fill in `backend/.env`:
 
 ```env
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_key
 ```
 
+The frontend and backend must use the same Supabase project.
+
 Start Flask:
 
 ```bash
-python3 app.py
+python3 backend/app.py
 ```
 
-The backend runs at:
+Flask runs at:
 
 ```text
 http://127.0.0.1:5000
 ```
 
-## API Health Checks
+Keep both terminals running when testing the complete application.
 
-Test the Flask server:
+## Supabase Setup
+
+Use the shared team project unless you are intentionally creating an isolated development environment.
+
+For a new, empty database:
+
+1. Open the Supabase SQL Editor.
+2. Review and run `database/schema.sql`.
+3. Configure the authentication Site URL and allowed redirects.
+4. Add the project URL and publishable key to your local environment files.
+
+Do not rerun the initial schema against an existing database. It creates tables and policies that may already exist.
+
+For local authentication, configure:
+
+- Site URL: `http://localhost:5173`
+- Redirect URL: `http://localhost:5173/login`
+- Optional second development port: `http://localhost:5174/login`
+
+Email confirmation returns the user to the login page.
+
+Future database changes should be recorded as versioned migrations.
+
+## First Administrator
+
+New accounts receive the `user` role automatically.
+
+To create an administrator:
+
+1. Register the account through the application.
+2. Confirm its email.
+3. Confirm a matching row exists in `public.profiles`.
+4. Run this separately in the Supabase SQL Editor:
+
+```sql
+UPDATE public.profiles
+SET role = 'administrator'
+WHERE email = 'replace-with-the-existing-account-email'
+RETURNING id, role, is_active;
+```
+
+Verify that exactly the intended account was updated.
+
+Sign out and back in after changing roles. Keep separate user and administrator accounts for testing.
+
+## Application Routes
+
+| Route | Access |
+|---|---|
+| `/login` | Login page |
+| `/register` | Registration page |
+| `/dashboard` | Active signed-in users |
+| `/admin` | Active administrators |
+
+After login, administrators go to `/admin` and regular users go to `/dashboard`.
+
+Frontend routing improves navigation. Flask and database permissions enforce access to protected data.
+
+## API Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/health` | Check that Flask is running |
+| `GET /api/supabase-health` | Check Supabase Auth connectivity |
+| `GET /api/me` | Verify the token and return the account profile |
+| `GET /api/admin/health` | Verify administrator access |
+
+Protected endpoints require:
 
 ```text
-http://127.0.0.1:5000/api/health
+Authorization: Bearer <user-access-token>
 ```
 
-Test the Supabase connection:
+The frontend attaches the token automatically.
 
-```text
-http://127.0.0.1:5000/api/supabase-health
-```
+Opening a protected endpoint directly in the address bar does not attach that token, so a 401 response is expected.
 
-## Database Setup
+The Supabase health endpoint does not test all database operations.
 
-1. Create a Supabase project.
-2. Open the Supabase SQL Editor.
-3. Copy the contents of `database/schema.sql`.
-4. Run the schema in the SQL Editor.
-5. Add the Supabase URL and publishable key to `backend/.env`.
+## Authentication Testing
 
-The schema creates:
+Run both servers and use the dashboard test buttons.
 
-- User profiles
-- Locations
-- Resources
-- Time slots
-- Bookings
-- User and administrator roles
-- Row-level security policies
-- Double-booking protection
-- Overlapping-time-slot protection
+| Test | Active user | Active administrator |
+|---|---|---|
+| Test my account | 200 | 200 |
+| Test admin access | 403 | 200 |
+| Test invalid token | 401 | 401 |
 
-## Environment Variable Safety
+Also verify:
 
-Never commit `.env` files to GitHub.
+- Email confirmation works.
+- Login redirects to the correct dashboard.
+- Refreshing preserves the session.
+- Logout removes access to protected pages.
+- Regular users cannot open `/admin`.
+- Flask returns 403 for an inactive account.
 
-Only `.env.example` files containing placeholders should be committed.
+Restore test accounts to their intended role and active status afterward.
 
-Never place a Supabase secret or service-role key in frontend code.
+These are manual checks. Automated tests still need to be added.
 
-## Frontend Quality Checks
+## Environment Safety
 
-Run ESLint:
+Never commit:
+
+- Real `.env` files
+- Python `.venv/` folders
+- Access tokens or passwords
+- Supabase secret or service-role keys
+
+Commit `.env.example` files containing placeholders.
+
+Frontend `VITE_*` values are included in the browser build. Only use the Supabase publishable key there, never a secret key.
+
+Before each push, run from the project root:
 
 ```bash
-npm run lint
+git check-ignore -v backend/.env frontend/.env backend/.venv
+git ls-files -- backend/.env frontend/.env backend/.venv
+git diff --cached --name-only
 ```
 
-Create a production build:
+The `git ls-files` command should print nothing.
+
+If it prints a path, stop and resolve the tracked file before pushing. Adding a file to `.gitignore` does not untrack an existing committed file.
+
+## Quality Checks
+
+From the project root:
 
 ```bash
-npm run build
+npm --prefix frontend run lint
+npm --prefix frontend run build
+git diff --check
 ```
 
-Both commands should pass before opening a pull request.
+Lint and build checks do not replace functional or security tests.
 
-## Git Workflow
+## Team Git Workflow
 
-Update your local `main` branch:
+Start with a clean working tree:
 
 ```bash
+git status
 git switch main
-git pull origin main
-```
-
-Create a feature branch:
-
-```bash
+git pull --ff-only origin main
 git switch -c your-name-feature
 ```
 
-After completing and testing the work:
+Make and test your changes.
+
+Stage only the intended files, review them, and commit:
 
 ```bash
-git add .
-git commit -m "Describe your changes"
+git add path/to/changed-file
+git diff --cached
+git commit -m "Describe the change"
 git push -u origin your-name-feature
 ```
 
-Create a pull request so another team member can review the changes before merging them into `main`.
+Open a pull request into `main` for review.
 
-## Next Development Steps
+Do not push directly to `main`.
 
-- Create registration and login pages
-- Connect the login forms to Supabase Authentication
-- Add protected routes
-- Add user and administrator navigation
-- Create location and resource pages
-- Display available time slots
-- Implement booking creation
-- Implement booking cancellation
-- Create participant and administrator dashboards
-- Complete integration testing
+## Next Milestone
+
+Complete one booking workflow:
+
+1. An administrator creates a location and resource.
+2. An administrator creates available time slots.
+3. A user views availability.
+4. The user creates a booking.
+5. The user views and cancels the booking.
+6. The cancelled slot becomes available again.
+
+Test simultaneous booking attempts to confirm that only one succeeds.
+
+## Server Deployment Plan
+
+Planned deployment:
+
+- Our own Linux machine hosts the application.
+- Nginx serves the React production build and handles HTTPS.
+- Gunicorn runs Flask behind Nginx.
+- Supabase remains hosted for authentication and database storage.
+
+Deployment is not implemented yet.
+
+Do not deploy using Flask debug mode or the Vite development server.
 
 ## User Workflow
 
