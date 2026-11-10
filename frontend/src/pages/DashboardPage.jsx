@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 import AuthApiCheck from '@/components/AuthApiCheck'
@@ -61,6 +61,13 @@ function DashboardPage() {
             {error}
           </p>
         )}
+
+        <Button
+          className="mt-6 bg-[#4f654d] text-white hover:bg-[#3f523e]"
+          asChild
+        >
+          <Link to="/resources">Browse resources</Link>
+        </Button>
 
         <AuthApiCheck />
 

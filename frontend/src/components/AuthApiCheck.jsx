@@ -54,7 +54,7 @@ function AuthApiCheck() {
   return (
     <section className="mt-8 border-t pt-6">
       <h2 className="text-lg font-semibold">
-        Flask authentication tests
+        API connection tests
       </h2>
 
       <div className="mt-4 flex flex-wrap gap-3">
@@ -65,6 +65,15 @@ function AuthApiCheck() {
           onClick={() => testEndpoint('/api/me')}
         >
           Test my account
+        </Button>
+
+        <Button
+          type="button"
+          variant="outline"
+          disabled={loading}
+          onClick={() => testEndpoint('/api/resources')}
+        >
+          Test resources
         </Button>
 
         <Button

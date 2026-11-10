@@ -18,6 +18,12 @@ function AdminPage() {
           Only active administrators can open this page.
         </p>
 
+        <Button
+          className="mt-6 bg-[#4f654d] text-white hover:bg-[#3f523e]"
+          asChild
+        >
+          <Link to="/resources">Browse resources</Link>
+        </Button>
         <AuthApiCheck />
 
         <Button className="mt-8" asChild>
