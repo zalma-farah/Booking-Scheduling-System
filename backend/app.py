@@ -64,7 +64,6 @@ def log_auth_rejection(response, stage):
     else:
         code = details.get("code") or details.get("error_code")
 
-        # Only log short error-code-style values.
         if (
             isinstance(code, str)
             and len(code) <= 80
@@ -86,7 +85,7 @@ def log_auth_rejection(response, stage):
 
 
 def require_auth(admin_only=False):
-    """Verify the access token and account profile."""
+    """Verify the access token and current account profile."""
 
     def decorator(view):
         @wraps(view)
@@ -106,16 +105,13 @@ def require_auth(admin_only=False):
                     503,
                 )
 
-            token = parts[1]
-
-            # Keep each user's token local to this request.
+            # These headers belong only to the current request.
             headers = {
                 "apikey": SUPABASE_PUBLISHABLE_KEY,
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {parts[1]}",
             }
 
             try:
-                # Ask Supabase Auth to verify the supplied token.
                 user_response = httpx.get(
                     f"{SUPABASE_URL}/auth/v1/user",
                     headers=headers,
@@ -124,7 +120,6 @@ def require_auth(admin_only=False):
 
                 if user_response.status_code in (400, 401, 403):
                     log_auth_rejection(user_response, "user")
-
                     return api_error(
                         "Invalid or expired access token.",
                         401,
@@ -139,8 +134,6 @@ def require_auth(admin_only=False):
                         502,
                     )
 
-                # Read the profile using the verified user's ID.
-                # Their access token keeps database RLS in effect.
                 profile_response = httpx.get(
                     f"{SUPABASE_URL}/rest/v1/profiles",
                     headers=headers,
@@ -153,7 +146,6 @@ def require_auth(admin_only=False):
 
                 if profile_response.status_code == 401:
                     log_auth_rejection(profile_response, "profile")
-
                     return api_error(
                         "Invalid or expired access token.",
                         401,
@@ -163,10 +155,7 @@ def require_auth(admin_only=False):
                 profiles = profile_response.json()
 
                 if not isinstance(profiles, list):
-                    return api_error(
-                        "Invalid profile response.",
-                        502,
-                    )
+                    return api_error("Invalid profile response.", 502)
 
                 if len(profiles) != 1:
                     return api_error(
@@ -177,16 +166,10 @@ def require_auth(admin_only=False):
                 profile = profiles[0]
 
                 if not isinstance(profile, dict):
-                    return api_error(
-                        "Invalid profile response.",
-                        502,
-                    )
+                    return api_error("Invalid profile response.", 502)
 
                 if profile.get("is_active") is not True:
-                    return api_error(
-                        "Your account is inactive.",
-                        403,
-                    )
+                    return api_error("Your account is inactive.", 403)
 
                 if profile.get("role") not in (
                     "user",
@@ -215,9 +198,10 @@ def require_auth(admin_only=False):
                     502,
                 )
 
-            # These values exist only for the current request.
+            # Available only during the current request.
             g.user = user
             g.profile = profile
+            g.supabase_headers = headers
 
             return view(*args, **kwargs)
 
@@ -247,9 +231,7 @@ def supabase_health():
     try:
         response = httpx.get(
             f"{SUPABASE_URL}/auth/v1/health",
-            headers={
-                "apikey": SUPABASE_PUBLISHABLE_KEY,
-            },
+            headers={"apikey": SUPABASE_PUBLISHABLE_KEY},
             timeout=5.0,
         )
         response.raise_for_status()
@@ -290,6 +272,123 @@ def administrator_health():
     )
 
 
+@app.get("/api/resources")
+@require_auth()
+def list_resources():
+    """List active resources at active locations."""
+
+    try:
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers=g.supabase_headers,
+            params={
+                "select": (
+                    "id,name,description,"
+                    "location:locations!inner(id,name,address)"
+                ),
+                "is_active": "eq.true",
+                "location.is_active": "eq.true",
+                "order": "name.asc,id.asc",
+                "limit": "100",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Access to resources was denied.",
+                403,
+            )
+
+        response.raise_for_status()
+        resources = response.json()
+
+        if not isinstance(resources, list):
+            return api_error("Invalid resource response.", 502)
+
+        return jsonify(
+            {
+                "status": "ok",
+                "message": f"Loaded {len(resources)} active resource(s).",
+                "resources": resources,
+            }
+        )
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading resources timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to load resources. Please try again.",
+            502,
+        )
+
+
+@app.get("/api/resources/<int:resource_id>/slots")
+@require_auth()
+def list_resource_slots(resource_id):
+    """List future time slots and availability for one resource."""
+
+    if resource_id < 1 or resource_id > 9223372036854775807:
+        return api_error("Invalid resource ID.", 400)
+
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/get_resource_availability",
+            headers=g.supabase_headers,
+            json={
+                "p_resource_id": resource_id,
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Access to availability was denied.",
+                403,
+            )
+
+        response.raise_for_status()
+        slots = response.json()
+
+        if not isinstance(slots, list):
+            return api_error("Invalid availability response.", 502)
+
+        return jsonify(
+            {
+                "status": "ok",
+                "slots": slots,
+            }
+        )
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading availability timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to load availability. Please try again.",
+            502,
+        )
+
+
 if __name__ == "__main__":
-    # Development server only.
+    # Local development only.
     app.run(debug=True, port=5000)
