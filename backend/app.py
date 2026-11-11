@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 import httpx
@@ -666,6 +667,670 @@ def cancel_booking(booking_id):
         return api_error(
             "Unable to confirm the cancellation. "
             "Refresh your bookings before trying again.",
+            502,
+        )
+
+
+def _is_location_record(value):
+    """Check the small response shape used by the admin location screen."""
+
+    return (
+        isinstance(value, dict)
+        and type(value.get("id")) is int
+        and value["id"] > 0
+        and isinstance(value.get("name"), str)
+        and bool(value["name"].strip())
+        and (value.get("address") is None or isinstance(value["address"], str))
+        and type(value.get("is_active")) is bool
+    )
+
+
+@app.get("/api/admin/locations")
+@require_auth(admin_only=True)
+def list_admin_locations():
+    """List the latest locations, including inactive ones, for administrators."""
+
+    try:
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/locations",
+            headers=g.supabase_headers,
+            params={
+                "select": "id,name,address,is_active,created_at",
+                "order": "created_at.desc,id.desc",
+                "limit": "100",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator access to locations was denied.", 403)
+
+        response.raise_for_status()
+        locations = response.json()
+
+        if not isinstance(locations, list) or not all(
+            _is_location_record(location) for location in locations
+        ):
+            return api_error("Invalid location list response.", 502)
+
+        result = jsonify({"status": "ok", "locations": locations})
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading locations timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error("Unable to load locations. Please try again.", 502)
+
+
+@app.post("/api/admin/locations")
+@require_auth(admin_only=True)
+def create_admin_location():
+    """Create an active location using the verified administrator's token."""
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or "name" not in payload
+        or set(payload) - {"name", "address"}
+    ):
+        return api_error(
+            "Send a JSON object containing name and an optional address.",
+            400,
+        )
+
+    name = payload["name"]
+
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+        return api_error("Location name must be between 1 and 120 characters.", 400)
+
+    name = name.strip()
+    address = payload.get("address")
+
+    if address is not None:
+        if not isinstance(address, str) or len(address.strip()) > 250:
+            return api_error("Address must be text of at most 250 characters.", 400)
+
+        address = address.strip() or None
+
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/locations",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={"select": "id,name,address,is_active,created_at"},
+            json={"name": name, "address": address, "is_active": True},
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator permission to create locations was denied.", 403)
+
+        if response.status_code == 409:
+            return api_error(
+                "The location could not be created because of a data conflict. "
+                "Refresh the list before trying again.",
+                409,
+            )
+
+        response.raise_for_status()
+        locations = response.json()
+
+        if (
+            response.status_code != 201
+            or not isinstance(locations, list)
+            or len(locations) != 1
+            or not _is_location_record(locations[0])
+            or locations[0]["name"] != name
+            or locations[0].get("address") != address
+            or locations[0]["is_active"] is not True
+        ):
+            return api_error(
+                "The new location could not be confirmed. "
+                "Refresh the location list before trying again.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Location created successfully.",
+                "location": locations[0],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result, 201
+
+    except httpx.TimeoutException:
+        # A write may have committed even when its confirmation was lost.
+        return api_error(
+            "Location confirmation timed out. "
+            "Refresh the location list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the new location. "
+            "Refresh the location list before trying again.",
+            502,
+        )
+
+
+def _is_resource_record(value):
+    """Validate the resource fields returned to the administrator screen."""
+
+    return (
+        isinstance(value, dict)
+        and type(value.get("id")) is int
+        and value["id"] > 0
+        and type(value.get("location_id")) is int
+        and value["location_id"] > 0
+        and isinstance(value.get("name"), str)
+        and bool(value["name"].strip())
+        and (
+            value.get("description") is None
+            or isinstance(value["description"], str)
+        )
+        and type(value.get("is_active")) is bool
+        and (
+            value.get("location") is None
+            or (
+                _is_location_record(value["location"])
+                and value["location"]["id"] == value["location_id"]
+            )
+        )
+    )
+
+
+@app.get("/api/admin/resources")
+@require_auth(admin_only=True)
+def list_admin_resources():
+    """List the latest resources, including inactive ones, for administrators."""
+
+    try:
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers=g.supabase_headers,
+            params={
+                "select": (
+                    "id,location_id,name,description,is_active,created_at,"
+                    "location:locations(id,name,is_active)"
+                ),
+                "order": "created_at.desc,id.desc",
+                "limit": "100",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator access to resources was denied.", 403)
+
+        response.raise_for_status()
+        resources = response.json()
+
+        if not isinstance(resources, list) or not all(
+            _is_resource_record(resource) for resource in resources
+        ):
+            return api_error("Invalid administrator resource response.", 502)
+
+        result = jsonify({"status": "ok", "resources": resources})
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error("Loading resources timed out. Please try again.", 503)
+
+    except (httpx.HTTPError, ValueError):
+        return api_error("Unable to load administrator resources. Please try again.", 502)
+
+
+@app.post("/api/admin/resources")
+@require_auth(admin_only=True)
+def create_admin_resource():
+    """Create a resource at an active location with the administrator's token."""
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or not {"location_id", "name"} <= set(payload)
+        or set(payload) - {"location_id", "name", "description"}
+    ):
+        return api_error(
+            "Send location_id, name, and an optional description.",
+            400,
+        )
+
+    location_id = payload["location_id"]
+    name = payload["name"]
+    description = payload.get("description")
+
+    if (
+        type(location_id) is not int
+        or location_id < 1
+        or location_id > 9223372036854775807
+    ):
+        return api_error("location_id must be a positive integer.", 400)
+
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+        return api_error("Resource name must be between 1 and 120 characters.", 400)
+
+    name = name.strip()
+
+    if description is not None:
+        if not isinstance(description, str) or len(description.strip()) > 1000:
+            return api_error("Description must be text of at most 1000 characters.", 400)
+
+        description = description.strip() or None
+
+    try:
+        # Two short database calls leave time for the existing auth checks.
+        # Keep using the user's token; never use a service-role key here.
+        location_response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/locations",
+            headers=g.supabase_headers,
+            params={
+                "select": "id,name,is_active",
+                "id": f"eq.{location_id}",
+                "is_active": "eq.true",
+                "limit": "1",
+            },
+            timeout=5.0,
+        )
+
+        if location_response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if location_response.status_code == 403:
+            return api_error("Access to the selected location was denied.", 403)
+
+        location_response.raise_for_status()
+        locations = location_response.json()
+
+        if not isinstance(locations, list):
+            return api_error("Invalid selected location response.", 502)
+
+        if len(locations) == 0:
+            return api_error("Choose an existing active location. Refresh the list.", 404)
+
+        if (
+            len(locations) != 1
+            or not _is_location_record(locations[0])
+            or locations[0]["id"] != location_id
+            or locations[0]["is_active"] is not True
+        ):
+            return api_error("Invalid selected location response.", 502)
+
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={"select": "id,location_id,name,description,is_active,created_at"},
+            json={
+                "location_id": location_id,
+                "name": name,
+                "description": description,
+                "is_active": True,
+            },
+            timeout=5.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator permission to create resources was denied.", 403)
+
+        if response.status_code == 409:
+            return api_error(
+                "The resource could not be created because its related data changed "
+                "or a data conflict occurred. Refresh the lists before trying again.",
+                409,
+            )
+
+        response.raise_for_status()
+        resources = response.json()
+
+        if (
+            response.status_code != 201
+            or not isinstance(resources, list)
+            or len(resources) != 1
+            or not _is_resource_record(resources[0])
+            or resources[0]["location_id"] != location_id
+            or resources[0]["name"] != name
+            or resources[0].get("description") != description
+            or resources[0]["is_active"] is not True
+        ):
+            return api_error(
+                "The new resource could not be confirmed. "
+                "Refresh the resource list before trying again.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Resource created successfully.",
+                "resource": resources[0],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result, 201
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Resource confirmation timed out. "
+            "Refresh the resource list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the new resource. "
+            "Refresh the resource list before trying again.",
+            502,
+        )
+
+
+def _parse_slot_timestamp(value):
+    """Require an explicit timezone and normalize API timestamps to UTC."""
+
+    if not isinstance(value, str) or len(value) > 50 or "T" not in value:
+        raise ValueError("An ISO timestamp with a timezone is required")
+
+    try:
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(normalized)
+
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("A timezone is required")
+
+        return parsed.astimezone(timezone.utc)
+
+    except (ValueError, OverflowError) as error:
+        raise ValueError("Invalid timezone-aware timestamp") from error
+
+
+def _is_slot_record(value):
+    """Validate the time-slot data used by the administrator screen."""
+
+    if (
+        not isinstance(value, dict)
+        or type(value.get("id")) is not int
+        or value["id"] < 1
+        or type(value.get("resource_id")) is not int
+        or value["resource_id"] < 1
+        or type(value.get("is_active")) is not bool
+        or (
+            value.get("resource") is not None
+            and (
+                not _is_resource_record(value["resource"])
+                or value["resource"]["id"] != value["resource_id"]
+            )
+        )
+    ):
+        return False
+
+    try:
+        return _parse_slot_timestamp(value.get("end_time")) > _parse_slot_timestamp(
+            value.get("start_time")
+        )
+    except ValueError:
+        return False
+
+
+@app.get("/api/admin/time-slots")
+@require_auth(admin_only=True)
+def list_admin_time_slots():
+    """List the next upcoming slots without exposing booking owners."""
+
+    try:
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/time_slots",
+            headers=g.supabase_headers,
+            params={
+                "select": (
+                    "id,resource_id,start_time,end_time,is_active,created_at,"
+                    "resource:resources(id,location_id,name,is_active,"
+                    "location:locations(id,name,is_active)),bookings(status)"
+                ),
+                "start_time": f"gt.{datetime.now(timezone.utc).isoformat()}",
+                "bookings.status": "eq.active",
+                "order": "start_time.asc,id.asc",
+                "limit": "100",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator access to time slots was denied.", 403)
+
+        response.raise_for_status()
+        slots = response.json()
+
+        if not isinstance(slots, list) or not all(
+            _is_slot_record(slot) for slot in slots
+        ):
+            return api_error("Invalid administrator time-slot response.", 502)
+
+        for slot in slots:
+            bookings = slot.pop("bookings", None)
+
+            if not isinstance(bookings, list) or any(
+                not isinstance(booking, dict)
+                or booking.get("status") not in ("active", "cancelled")
+                for booking in bookings
+            ):
+                return api_error("Invalid slot availability response.", 502)
+
+            resource = slot.get("resource")
+            location = resource.get("location") if resource is not None else None
+            slot["is_available"] = (
+                slot["is_active"] is True
+                and resource is not None
+                and resource["is_active"] is True
+                and location is not None
+                and location["is_active"] is True
+                and not any(booking["status"] == "active" for booking in bookings)
+            )
+
+        result = jsonify({"status": "ok", "slots": slots})
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error("Loading time slots timed out. Please try again.", 503)
+
+    except (httpx.HTTPError, ValueError):
+        return api_error("Unable to load administrator time slots. Please try again.", 502)
+
+
+@app.post("/api/admin/time-slots")
+@require_auth(admin_only=True)
+def create_admin_time_slot():
+    """Create a future slot; PostgreSQL atomically prevents overlaps."""
+
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "resource_id", "start_time", "end_time"
+    }:
+        return api_error(
+            "Send a JSON object containing only resource_id, start_time, and end_time.",
+            400,
+        )
+
+    resource_id = payload["resource_id"]
+
+    if (
+        type(resource_id) is not int
+        or resource_id < 1
+        or resource_id > 9223372036854775807
+    ):
+        return api_error("resource_id must be a positive integer.", 400)
+
+    try:
+        start = _parse_slot_timestamp(payload["start_time"])
+        end = _parse_slot_timestamp(payload["end_time"])
+    except ValueError:
+        return api_error("Start and end must be valid timestamps with a timezone.", 400)
+
+    now = datetime.now(timezone.utc)
+
+    if start <= now:
+        return api_error("The slot must start in the future.", 400)
+
+    if start >= now + timedelta(days=30):
+        return api_error("Choose a start within the next 30 days.", 400)
+
+    if end <= start:
+        return api_error("The end time must be after the start time.", 400)
+
+    try:
+        parent_response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers=g.supabase_headers,
+            params={
+                "select": "id,location_id,name,is_active,location:locations!inner(id,name,is_active)",
+                "id": f"eq.{resource_id}",
+                "is_active": "eq.true",
+                "location.is_active": "eq.true",
+                "limit": "1",
+            },
+            timeout=5.0,
+        )
+
+        if parent_response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if parent_response.status_code == 403:
+            return api_error("Access to the selected resource was denied.", 403)
+
+        parent_response.raise_for_status()
+        resources = parent_response.json()
+
+        if not isinstance(resources, list):
+            return api_error("Invalid selected resource response.", 502)
+
+        if len(resources) == 0:
+            return api_error("Choose an active room at an active location. Refresh the lists.", 404)
+
+        if (
+            len(resources) != 1
+            or not _is_resource_record(resources[0])
+            or resources[0]["id"] != resource_id
+            or resources[0]["is_active"] is not True
+            or resources[0].get("location") is None
+            or resources[0]["location"]["is_active"] is not True
+        ):
+            return api_error("Invalid selected resource response.", 502)
+
+        # The parent check can take time; do not insert a start that has since passed.
+        if start <= datetime.now(timezone.utc):
+            return api_error("The start time has already passed. Choose a future time.", 400)
+
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/time_slots",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={"select": "id,resource_id,start_time,end_time,is_active,created_at"},
+            json={
+                "resource_id": resource_id,
+                "start_time": start.isoformat(),
+                "end_time": end.isoformat(),
+                "is_active": True,
+            },
+            timeout=5.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Administrator permission to create time slots was denied.", 403)
+
+        if response.status_code in (400, 409):
+            details = response.json()
+            error_code = details.get("code") if isinstance(details, dict) else None
+
+            # PostgREST may report an exclusion-constraint failure as HTTP 400.
+            if error_code == "23P01":
+                return api_error(
+                    "This time overlaps an existing slot for this room. "
+                    "Choose another time; adjacent slots are allowed.",
+                    409,
+                )
+
+            if error_code in ("23503", "23505"):
+                return api_error(
+                    "The room changed or a data conflict occurred. Refresh before trying again.",
+                    409,
+                )
+
+            if error_code == "23514":
+                return api_error("The time slot does not meet the database rules.", 400)
+
+        response.raise_for_status()
+        slots = response.json()
+
+        if (
+            response.status_code != 201
+            or not isinstance(slots, list)
+            or len(slots) != 1
+            or not _is_slot_record(slots[0])
+            or slots[0]["resource_id"] != resource_id
+            or slots[0]["is_active"] is not True
+            or _parse_slot_timestamp(slots[0]["start_time"]) != start
+            or _parse_slot_timestamp(slots[0]["end_time"]) != end
+        ):
+            return api_error(
+                "The new slot could not be confirmed. Refresh the time-slot list before trying again.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Time slot created successfully.",
+                "slot": slots[0],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result, 201
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Time-slot confirmation timed out. Refresh the time-slot list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the new time slot. Refresh the time-slot list before trying again.",
             502,
         )
 
