@@ -389,6 +389,287 @@ def list_resource_slots(resource_id):
         )
 
 
+@app.get("/api/bookings")
+@require_auth()
+def list_my_bookings():
+    """List only this account's latest bookings, including cancelled history."""
+
+    try:
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/bookings",
+            headers=g.supabase_headers,
+            params={
+                "select": (
+                    "id,user_id,time_slot_id,status,created_at,cancelled_at,"
+                    "slot:time_slots(id,start_time,end_time,"
+                    "resource:resources(id,name,location:locations(id,name)))"
+                ),
+                # Administrators also see only their OWN bookings here.
+                "user_id": f"eq.{g.user['id']}",
+                "order": "created_at.desc,id.desc",
+                "limit": "100",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Access to your bookings was denied.",
+                403,
+            )
+
+        response.raise_for_status()
+        bookings = response.json()
+
+        if not isinstance(bookings, list) or any(
+            not isinstance(booking, dict)
+            or booking.get("id") is None
+            or booking.get("user_id") != g.user["id"]
+            or booking.get("status") not in ("active", "cancelled")
+            for booking in bookings
+        ):
+            return api_error("Invalid booking list response.", 502)
+
+        # Keep booking rows even if RLS hides an inactive related resource.
+        # Return only the fields this personal view needs, not account IDs.
+        fields = (
+            "id", "time_slot_id", "status",
+            "created_at", "cancelled_at", "slot",
+        )
+        result = jsonify(
+            {
+                "status": "ok",
+                "bookings": [
+                    {field: booking.get(field) for field in fields}
+                    for booking in bookings
+                ],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading your bookings timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to load your bookings. Please try again.",
+            502,
+        )
+
+
+@app.post("/api/bookings")
+@require_auth()
+def create_booking():
+    """Create an active booking for the verified signed-in user."""
+
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict) or set(payload) != {"time_slot_id"}:
+        return api_error(
+            "Send a JSON object containing only time_slot_id.",
+            400,
+        )
+
+    time_slot_id = payload["time_slot_id"]
+
+    # bool is a subclass of int in Python, so use an exact type check.
+    if (
+        type(time_slot_id) is not int
+        or time_slot_id < 1
+        or time_slot_id > 9223372036854775807
+    ):
+        return api_error("time_slot_id must be a positive integer.", 400)
+
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/bookings",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={
+                "select": "id,time_slot_id,status,created_at",
+            },
+            json={
+                # Never accept the booking owner from the browser.
+                "user_id": g.user["id"],
+                "time_slot_id": time_slot_id,
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Booking is not permitted for this account or time slot.",
+                403,
+            )
+
+        if response.status_code == 409:
+            details = response.json()
+            code = details.get("code") if isinstance(details, dict) else None
+
+            if code == "23505":
+                return api_error(
+                    "This time slot is already booked. "
+                    "Refresh availability and choose another slot.",
+                    409,
+                )
+
+            if code == "23503":
+                return api_error(
+                    "The account or time slot is no longer available. "
+                    "Refresh before trying again.",
+                    409,
+                )
+
+        response.raise_for_status()
+        bookings = response.json()
+
+        if (
+            not isinstance(bookings, list)
+            or len(bookings) != 1
+            or not isinstance(bookings[0], dict)
+            or bookings[0].get("id") is None
+            or bookings[0].get("time_slot_id") != time_slot_id
+            or bookings[0].get("status") != "active"
+        ):
+            return api_error(
+                "The booking result could not be confirmed. "
+                "Refresh availability before trying again.",
+                502,
+            )
+
+        return jsonify(
+            {
+                "status": "ok",
+                "message": "Booking created successfully.",
+                "booking": bookings[0],
+            }
+        ), 201
+
+    except httpx.TimeoutException:
+        # The write might have completed even if its response timed out.
+        return api_error(
+            "Booking confirmation timed out. "
+            "Refresh availability before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the booking. "
+            "Refresh availability before trying again.",
+            502,
+        )
+
+
+@app.post("/api/bookings/<int:booking_id>/cancel")
+@require_auth()
+def cancel_booking(booking_id):
+    """Cancel the verified user's own booking without deleting its history."""
+
+    if (
+        type(booking_id) is not int
+        or booking_id < 1
+        or booking_id > 9223372036854775807
+    ):
+        return api_error("Invalid booking ID.", 400)
+
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/cancel_own_booking",
+            headers=g.supabase_headers,
+            # Ownership comes from auth.uid() inside the database function.
+            # Never accept an owner or a replacement status from the browser.
+            json={"booking_id": booking_id},
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Cancellation is not permitted for this account.",
+                403,
+            )
+
+        if response.status_code == 400:
+            details = response.json()
+            code = details.get("code") if isinstance(details, dict) else None
+
+            if code == "P0001":
+                # Use the same message for absent, cancelled and other-owned IDs.
+                return api_error(
+                    "Booking not found, already cancelled, "
+                    "or does not belong to your account. Refresh your bookings.",
+                    404,
+                )
+
+            if code == "22023":
+                return api_error("Invalid booking ID.", 400)
+
+        response.raise_for_status()
+
+        # Current VOID responses are empty (204); legacy ones may be JSON null.
+        # Never try to decode an empty body as JSON.
+        void_result = response.status_code in (200, 204)
+
+        if response.status_code == 200 and response.content.strip():
+            void_result = response.json() is None
+
+        if not void_result:
+            return api_error(
+                "The cancellation result could not be confirmed. "
+                "Refresh your bookings before trying again.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Booking cancelled successfully.",
+                "booking": {"id": booking_id, "status": "cancelled"},
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        # The change may have committed even if its response never arrived.
+        return api_error(
+            "Cancellation confirmation timed out. "
+            "Refresh your bookings before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the cancellation. "
+            "Refresh your bookings before trying again.",
+            502,
+        )
+
+
 if __name__ == "__main__":
     # Local development only.
     app.run(debug=True, port=5000)
