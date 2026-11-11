@@ -3,6 +3,7 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import AdminPage from '@/pages/AdminPage'
 import DashboardPage from '@/pages/DashboardPage'
 import LoginPage from '@/pages/LoginPage'
+import BookingsPage from '@/pages/BookingsPage'
 import RegisterPage from '@/pages/RegisterPage'
 import ResourcesPage from '@/pages/ResourcesPage'
 import TimeSlotsPage from '@/pages/TimeSlotsPage'
@@ -39,6 +40,15 @@ function App() {
         element={
           <ProtectedRoute requireAdmin>
             <AdminPage />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/bookings"
+        element={
+          <ProtectedRoute>
+            <BookingsPage />
           </ProtectedRoute>
         }
       />

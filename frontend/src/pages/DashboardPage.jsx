@@ -69,6 +69,10 @@ function DashboardPage() {
           <Link to="/resources">Browse resources</Link>
         </Button>
 
+        <Button className="ml-3 mt-6" variant="outline" asChild>
+          <Link to="/bookings">My bookings</Link>
+        </Button>
+
         <AuthApiCheck />
 
         <Button
