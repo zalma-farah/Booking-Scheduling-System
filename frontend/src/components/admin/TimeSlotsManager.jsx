@@ -274,6 +274,12 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
                 {locationOptions.map((location) => <option key={location.id} value={String(location.id)}>{location.name}</option>)}
               </select></div>
 
+            <div className="admin-field"><Label htmlFor="slot-resource">Room / resource <span className="admin-required">*</span></Label>
+              <select id="slot-resource" name="resource_id" className="admin-select" value={form.resourceId}
+                onChange={(event) => setForm((previous) => ({...previous, resourceId: event.target.value}))} disabled={formDisabled || form.locationId === ''} required> 
+                  <option value="">{form.locationId === '' ? 'Select a location first' : 'Select a room'}</option>
+                    {roomsForLocation.map((resource) => <option key={resource.id} value={String(resource.id)}>{resource.name} </option>)}
+                </select></div>
 
             <div className="admin-field"><Label htmlFor="slot-date">Date <span className="admin-required">*</span></Label>
               <Input id="slot-date" name="date" type="date" className="admin-input" value={form.date}
