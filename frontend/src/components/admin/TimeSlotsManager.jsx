@@ -129,7 +129,7 @@ async function submitTimeSlot(event, context) {
 
 
 function TimeSlotsManager({ resourceVersion = 0 } = {}) {
-  const [form, setForm] = useState({ resourceId: '', date: '', startTime: '', endTime: '' })
+  const [form, setForm] = useState({ locationId: '' ,resourceId: '', date: '', startTime: '', endTime: '' })
   const [reloadCount, setReloadCount] = useState(0)
   const [result, setResult] = useState({ key: '', resources: [], slots: [], error: '' })
   const [creating, setCreating] = useState(false)
@@ -143,7 +143,18 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
   const activeResources = result.resources.filter(
     (resource) => resource.is_active && resource.location?.is_active === true
   )
-  const selectedResource = activeResources.find((resource) => String(resource.id) === form.resourceId)
+  const locationOptions= [] 
+
+  for (const resource of activeResources){
+
+    if (!locationOptions.some((location) => location.id === resource.location_id)) {
+
+      locationOptions.push({id: resource.location_id, name: resource.location.name})
+
+    }
+  }
+  const roomsForLocation = activeResources.filter((resource) => String(resource.location_id) == form.locationId)
+  const selectedResource = roomsForLocation.find((resource) => String(resource.id) === form.resourceId)
   const formDisabled = creating || loading || requiresRefresh || Boolean(result.error) || activeResources.length === 0
   const previewStart = parseLocalInput(form.date, form.startTime)
   const previewEnd = parseLocalInput(form.date, form.endTime)
@@ -256,12 +267,14 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
               setFeedback, setCreating, setRequiresRefresh, setForm, setReloadCount,
             })}
           >
-            <div className="admin-field"><Label htmlFor="slot-resource">Room / resource <span className="admin-required">*</span></Label>
-              <select id="slot-resource" name="resource_id" className="admin-select" value={form.resourceId}
-                onChange={(event) => setForm((previous) => ({ ...previous, resourceId: event.target.value }))} disabled={formDisabled} required>
-                <option value="">Select a room</option>
-                {activeResources.map((resource) => <option key={resource.id} value={String(resource.id)}>{resource.name} — {resource.location.name}</option>)}
+            <div className="admin-field"><Label htmlFor="slot-location">Location <span className="admin-required">*</span></Label>
+              <select id="slot-location" name="location_id" className="admin-select" value={form.locationId}
+                onChange={(event) => setForm((previous) => ({ ...previous, locationId: event.target.value, resourceId: '' }))} disabled={formDisabled} required>
+                <option value="">Select a location</option>
+                {locationOptions.map((location) => <option key={location.id} value={String(location.id)}>{location.name}</option>)}
               </select></div>
+
+
             <div className="admin-field"><Label htmlFor="slot-date">Date <span className="admin-required">*</span></Label>
               <Input id="slot-date" name="date" type="date" className="admin-input" value={form.date}
                 onChange={(event) => setForm((previous) => ({ ...previous, date: event.target.value }))} disabled={formDisabled} required /></div>
@@ -288,5 +301,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
     </section>
   )
 }
+
+
 
 export default TimeSlotsManager
