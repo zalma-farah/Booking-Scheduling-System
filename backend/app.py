@@ -578,8 +578,267 @@ def create_booking():
             "Refresh availability before trying again.",
             502,
         )
+@app.get("/api/admin/bookings")
+@require_auth(admin_only=True)
+def list_admin_bookings():
+    """List managed bookings using validated administrator filters."""
 
+    status_filter = request.args.get("status", "all")
+    resource_id_raw = request.args.get("resource_id")
 
+    if status_filter not in ("all", "active", "cancelled"):
+        return api_error(
+            "status must be one of: all, active, cancelled.",
+            400,
+        )
+
+    resource_id = None
+
+    if resource_id_raw is not None:
+        try:
+            resource_id = int(resource_id_raw)
+        except (TypeError, ValueError):
+            return api_error(
+                "resource_id must be a positive integer.",
+                400,
+            )
+
+        if (
+            resource_id < 1
+            or resource_id > 9223372036854775807
+            or str(resource_id) != resource_id_raw
+        ):
+            return api_error(
+                "resource_id must be a positive integer.",
+                400,
+            )
+
+    # Reject unknown query parameters instead of silently ignoring them.
+    allowed_parameters = {"status", "resource_id"}
+
+    if set(request.args) - allowed_parameters:
+        return api_error(
+            "Only status and resource_id filters are supported.",
+            400,
+        )
+
+    try:
+        params = {
+            "select": (
+                "id,user_id,time_slot_id,status,created_at,cancelled_at,"
+                "slot:time_slots!inner("
+                "id,resource_id,start_time,end_time,"
+                "resource:resources!inner("
+                "id,location_id,name,"
+                "location:locations!inner(id,name)"
+                ")"
+                ")"
+            ),
+            "order": "created_at.desc,id.desc",
+            "limit": "100",
+        }
+
+        if status_filter != "all":
+            params["status"] = f"eq.{status_filter}"
+
+        if resource_id is not None:
+            params["slot.resource_id"] = f"eq.{resource_id}"
+
+        # University ownership will be enforced here after the
+        # organization/administrator-assignment database migration exists.
+        # Never accept an organization ID from the browser as authorization.
+
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/bookings",
+            headers=g.supabase_headers,
+            params=params,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator access to bookings was denied.",
+                403,
+            )
+
+        response.raise_for_status()
+        bookings = response.json()
+
+        if not isinstance(bookings, list):
+            return api_error(
+                "Invalid administrator booking response.",
+                502,
+            )
+
+        for booking in bookings:
+            if (
+                not isinstance(booking, dict)
+                or type(booking.get("id")) is not int
+                or booking["id"] < 1
+                or type(booking.get("time_slot_id")) is not int
+                or booking["time_slot_id"] < 1
+                or booking.get("status") not in (
+                    "active",
+                    "cancelled",
+                )
+            ):
+                return api_error(
+                    "Invalid administrator booking response.",
+                    502,
+                )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "bookings": bookings,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading managed bookings timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to load managed bookings. Please try again.",
+            502,
+        )
+@app.post("/api/admin/bookings/<int:booking_id>/cancel")
+@require_auth(admin_only=True)
+def cancel_admin_booking(booking_id):
+    """Cancel an active booking managed by the administrator."""
+
+    if (
+        type(booking_id) is not int
+        or booking_id < 1
+        or booking_id > 9223372036854775807
+    ):
+        return api_error("Invalid booking ID.", 400)
+
+    # Do not accept ownership or status information from the browser.
+    if request.content_length not in (None, 0):
+        payload = request.get_json(silent=True)
+
+        if payload not in (None, {}):
+            return api_error(
+                "This request does not accept a body.",
+                400,
+            )
+
+    try:
+        # This stays separate from cancel_own_booking.
+        # The database RPC will enforce the administrator's organization
+        # assignment and preserve the booking row/history.
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/cancel_managed_booking",
+            headers=g.supabase_headers,
+            json={"booking_id": booking_id},
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to cancel this booking was denied.",
+                403,
+            )
+
+        if response.status_code == 404:
+            return api_error(
+                "Booking not found or cannot be managed by this account.",
+                404,
+            )
+
+        if response.status_code in (400, 409):
+            details = response.json()
+            code = (
+                details.get("code")
+                if isinstance(details, dict)
+                else None
+            )
+
+            if code == "22023":
+                return api_error(
+                    "Invalid booking ID.",
+                    400,
+                )
+
+            if code == "P0001":
+                return api_error(
+                    "Booking not found, already cancelled, "
+                    "or cannot be managed by this account.",
+                    404,
+                )
+
+            if code in ("23505", "23514"):
+                return api_error(
+                    "The booking could not be cancelled because its "
+                    "current state has changed. Refresh the reservation list.",
+                    409,
+                )
+
+        response.raise_for_status()
+        booking = response.json()
+
+        if isinstance(booking, list):
+            if len(booking) != 1:
+                return api_error(
+                    "The cancellation result could not be confirmed.",
+                    502,
+                )
+
+            booking = booking[0]
+
+        if (
+            not isinstance(booking, dict)
+            or booking.get("id") != booking_id
+            or booking.get("status") != "cancelled"
+            or not booking.get("cancelled_at")
+        ):
+            return api_error(
+                "The cancellation result could not be confirmed. "
+                "Refresh the reservation list.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Booking cancelled successfully.",
+                "booking": booking,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Cancellation confirmation timed out. "
+            "Refresh the reservation list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the cancellation. "
+            "Refresh the reservation list before trying again.",
+            502,
+        )
 @app.post("/api/bookings/<int:booking_id>/cancel")
 @require_auth()
 def cancel_booking(booking_id):
