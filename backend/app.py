@@ -829,7 +829,138 @@ def create_admin_location():
             502,
         )
 
+@app.patch("/api/admin/locations/<int:location_id>")
+@require_auth(admin_only=True)
+def update_admin_location(location_id):
+    """Update the editable details of an existing location."""
 
+    if (
+        type(location_id) is not int
+        or location_id < 1
+        or location_id > 9223372036854775807
+    ):
+        return api_error("Invalid location ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or not payload
+        or set(payload) - {"name", "address"}
+    ):
+        return api_error(
+            "Send at least one of: name or address.",
+            400,
+        )
+
+    updates = {}
+
+    if "name" in payload:
+        name = payload["name"]
+
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name.strip()) <= 120
+        ):
+            return api_error(
+                "Location name must be between 1 and 120 characters.",
+                400,
+            )
+
+        updates["name"] = name.strip()
+
+    if "address" in payload:
+        address = payload["address"]
+
+        if address is not None:
+            if (
+                not isinstance(address, str)
+                or len(address.strip()) > 250
+            ):
+                return api_error(
+                    "Address must be text of at most 250 characters.",
+                    400,
+                )
+
+            address = address.strip() or None
+
+        updates["address"] = address
+
+    try:
+        response = httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/locations",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={
+                "id": f"eq.{location_id}",
+                "select": "id,name,address,is_active,created_at",
+            },
+            json=updates,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this location was denied.",
+                403,
+            )
+
+        if response.status_code == 409:
+            return api_error(
+                "The location could not be updated because of a data conflict.",
+                409,
+            )
+
+        response.raise_for_status()
+        locations = response.json()
+
+        if not isinstance(locations, list):
+            return api_error("Invalid location update response.", 502)
+
+        if len(locations) == 0:
+            return api_error("Location not found.", 404)
+
+        if (
+            len(locations) != 1
+            or not _is_location_record(locations[0])
+            or locations[0]["id"] != location_id
+        ):
+            return api_error(
+                "The location update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Location updated successfully.",
+                "location": locations[0],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Location update confirmation timed out. "
+            "Refresh the location list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the location update. "
+            "Refresh the location list before trying again.",
+            502,
+        )
 def _is_resource_record(value):
     """Validate the resource fields returned to the administrator screen."""
 
@@ -1050,7 +1181,147 @@ def create_admin_resource():
             502,
         )
 
+@app.patch("/api/admin/resources/<int:resource_id>")
+@require_auth(admin_only=True)
+def update_admin_resource(resource_id):
+    """Update the editable details of an existing resource."""
 
+    if (
+        type(resource_id) is not int
+        or resource_id < 1
+        or resource_id > 9223372036854775807
+    ):
+        return api_error("Invalid resource ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or not payload
+        or set(payload) - {"name", "description"}
+    ):
+        return api_error(
+            "Send at least one of: name or description.",
+            400,
+        )
+
+    updates = {}
+
+    if "name" in payload:
+        name = payload["name"]
+
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name.strip()) <= 120
+        ):
+            return api_error(
+                "Resource name must be between 1 and 120 characters.",
+                400,
+            )
+
+        updates["name"] = name.strip()
+
+    if "description" in payload:
+        description = payload["description"]
+
+        if description is not None:
+            if (
+                not isinstance(description, str)
+                or len(description.strip()) > 1000
+            ):
+                return api_error(
+                    "Description must be text of at most 1000 characters.",
+                    400,
+                )
+
+            description = description.strip() or None
+
+        updates["description"] = description
+
+    try:
+        response = httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={
+                "id": f"eq.{resource_id}",
+                "select": (
+                    "id,location_id,name,description,"
+                    "is_active,created_at"
+                ),
+            },
+            json=updates,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this resource was denied.",
+                403,
+            )
+
+        if response.status_code == 409:
+            return api_error(
+                "The resource could not be updated because of a data conflict.",
+                409,
+            )
+
+        response.raise_for_status()
+        resources = response.json()
+
+        if not isinstance(resources, list):
+            return api_error("Invalid resource update response.", 502)
+
+        if len(resources) == 0:
+            return api_error("Resource not found.", 404)
+
+        resource = resources[0]
+
+        if (
+            len(resources) != 1
+            or not isinstance(resource, dict)
+            or resource.get("id") != resource_id
+            or type(resource.get("location_id")) is not int
+            or not isinstance(resource.get("name"), str)
+            or not resource["name"].strip()
+            or type(resource.get("is_active")) is not bool
+        ):
+            return api_error(
+                "The resource update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Resource updated successfully.",
+                "resource": resource,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Resource update confirmation timed out. "
+            "Refresh the resource list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the resource update. "
+            "Refresh the resource list before trying again.",
+            502,
+        )
 def _parse_slot_timestamp(value):
     """Require an explicit timezone and normalize API timestamps to UTC."""
 
