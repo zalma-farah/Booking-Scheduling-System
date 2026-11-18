@@ -1340,7 +1340,148 @@ def _parse_slot_timestamp(value):
     except (ValueError, OverflowError) as error:
         raise ValueError("Invalid timezone-aware timestamp") from error
 
+@app.patch("/api/admin/time-slots/<int:slot_id>")
+@require_auth(admin_only=True)
+def update_admin_time_slot(slot_id):
+    """Activate or deactivate an authorized future time slot."""
 
+    if (
+        type(slot_id) is not int
+        or slot_id < 1
+        or slot_id > 9223372036854775807
+    ):
+        return api_error("Invalid time-slot ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"is_active"}
+        or type(payload.get("is_active")) is not bool
+    ):
+        return api_error(
+            "Send a JSON object containing only boolean is_active.",
+            400,
+        )
+
+    is_active = payload["is_active"]
+
+    try:
+        # This RPC is intentionally required instead of doing:
+        #   SELECT booking -> PATCH time_slots
+        #
+        # The database operation must atomically verify that the slot is:
+        # - owned by the administrator's organization,
+        # - still in the future,
+        # - free of an active booking,
+        # - under active parents when enabling it.
+        #
+        # Tony's database migration will provide the reviewed RPC.
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/set_managed_slot_active",
+            headers=g.supabase_headers,
+            json={
+                "slot_id": slot_id,
+                "new_is_active": is_active,
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this time slot was denied.",
+                403,
+            )
+
+        if response.status_code == 404:
+            return api_error(
+                "Time slot not found.",
+                404,
+            )
+
+        if response.status_code in (400, 409):
+            details = response.json()
+            code = (
+                details.get("code")
+                if isinstance(details, dict)
+                else None
+            )
+
+            if code in ("P0001", "23505"):
+                return api_error(
+                    "The time slot cannot be changed because its state "
+                    "conflicts with an active booking or current schedule.",
+                    409,
+                )
+
+            if code == "22023":
+                return api_error(
+                    "Invalid time-slot update.",
+                    400,
+                )
+
+        response.raise_for_status()
+
+        slots = response.json()
+
+        # Allow the RPC to return either one object or a one-row list.
+        if isinstance(slots, list):
+            if len(slots) != 1:
+                return api_error(
+                    "The time-slot update could not be confirmed.",
+                    502,
+                )
+
+            slot = slots[0]
+        elif isinstance(slots, dict):
+            slot = slots
+        else:
+            return api_error(
+                "The time-slot update could not be confirmed.",
+                502,
+            )
+
+        if (
+            not isinstance(slot, dict)
+            or slot.get("id") != slot_id
+            or slot.get("is_active") is not is_active
+        ):
+            return api_error(
+                "The time-slot update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Time slot updated successfully.",
+                "slot": slot,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        # The database operation may have completed even if Flask did
+        # not receive its response. Do not automatically retry a write.
+        return api_error(
+            "Time-slot update confirmation timed out. "
+            "Refresh the time-slot list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the time-slot update. "
+            "Refresh the time-slot list before trying again.",
+            502,
+        )
 def _is_slot_record(value):
     """Validate the time-slot data used by the administrator screen."""
 
