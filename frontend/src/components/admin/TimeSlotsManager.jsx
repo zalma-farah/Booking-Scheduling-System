@@ -4,6 +4,7 @@ import { apiRequest } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import RecordAction from '@/components/admin/RecordAction'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
@@ -133,6 +134,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
   const [reloadCount, setReloadCount] = useState(0)
   const [result, setResult] = useState({ key: '', resources: [], slots: [], error: '' })
   const [creating, setCreating] = useState(false)
+  const [updating, setUpdating] = useState(false)
   const [feedback, setFeedback] = useState(null)
   const [requiresRefresh, setRequiresRefresh] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
@@ -153,9 +155,9 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
 
     }
   }
-  const roomsForLocation = activeResources.filter((resource) => String(resource.location_id) == form.locationId)
+  const roomsForLocation = activeResources.filter((resource) => String(resource.location_id) === form.locationId)
   const selectedResource = roomsForLocation.find((resource) => String(resource.id) === form.resourceId)
-  const formDisabled = creating || loading || requiresRefresh || Boolean(result.error) || activeResources.length === 0
+  const formDisabled = creating || updating || loading || requiresRefresh || Boolean(result.error) || activeResources.length === 0
   const previewStart = parseLocalInput(form.date, form.startTime)
   const previewEnd = parseLocalInput(form.date, form.endTime)
 
@@ -190,7 +192,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
   }, [requestKey])
 
   function refreshSlots() {
-    if (pending.current || loading) return
+    if (pending.current || loading || updating) return
     setReloadCount((count) => count + 1)
   }
 
@@ -247,7 +249,12 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
                         <div><strong>{resource?.name || 'Resource #' + slot.resource_id}</strong><small>Slot #{slot.id}</small>
                           {resource?.location?.name && <p className="admin-resource-description">{resource.location.name}</p>}</div></div></td>
                       <td><strong className="admin-slot-date">{dateFormatter.format(start)}</strong><span className="admin-slot-time">{formatRange(start, end)}</span></td>
-                      <td><span className={'admin-status ' + statusClass}>{label}</span></td>
+                      <td><span className={'admin-status ' + statusClass}>{label}</span>
+                        {label !== 'Booked' && <RecordAction key={`${slot.id}:${requestKey}`} label={slot.is_active ? 'Deactivate slot' : 'Activate slot'}
+                          endpoint={`/api/admin/time-slots/${slot.id}`} responseKey="slot" recordId={slot.id} expected={!slot.is_active}
+                          description="Only future slots without an active reservation can change. The slot and its history remain saved."
+                          disabled={creating || updating || requiresRefresh} onBusyChange={setUpdating} onChanged={() => setReloadCount(c => c + 1)} />}
+                      </td>
                     </tr>
                   )
                 })}</tbody>

@@ -49,6 +49,16 @@ def api_error(message, status_code):
     ), status_code
 
 
+def missing_rpc(response):
+    if response.status_code != 404:
+        return False
+    try:
+        value = response.json()
+        return isinstance(value, dict) and value.get("code") == "PGRST202"
+    except ValueError:
+        return False
+
+
 def log_auth_rejection(response, stage):
     """Log a limited diagnostic reason, never credentials."""
 
@@ -186,6 +196,26 @@ def require_auth(admin_only=False):
                         "Administrator access is required.",
                         403,
                     )
+
+                if admin_only:
+                    organization_response = httpx.post(
+                        f"{SUPABASE_URL}/rest/v1/rpc/get_admin_organization",
+                        headers=headers, json={}, timeout=10.0,
+                    )
+                    if missing_rpc(organization_response):
+                        return api_error("University setup is incomplete. Apply the reviewed database migrations.", 503)
+                    organization_response.raise_for_status()
+                    organizations = organization_response.json()
+                    if not isinstance(organizations, list):
+                        return api_error("Invalid university assignment response.", 502)
+                    if not organizations:
+                        return api_error("An active university assignment is required. Contact the project owner.", 403)
+                    if (len(organizations) != 1 or not isinstance(organizations[0], dict)
+                        or type(organizations[0].get("id")) is not int
+                        or organizations[0]["id"] < 1
+                        or not isinstance(organizations[0].get("name"), str)):
+                        return api_error("Invalid university assignment response.", 502)
+                    g.organization = organizations[0]
 
             except httpx.TimeoutException:
                 return api_error(
@@ -578,8 +608,267 @@ def create_booking():
             "Refresh availability before trying again.",
             502,
         )
+@app.get("/api/admin/bookings")
+@require_auth(admin_only=True)
+def list_admin_bookings():
+    """List managed bookings using validated administrator filters."""
 
+    status_filter = request.args.get("status", "all")
+    resource_id_raw = request.args.get("resource_id")
 
+    if status_filter not in ("all", "active", "cancelled"):
+        return api_error(
+            "status must be one of: all, active, cancelled.",
+            400,
+        )
+
+    resource_id = None
+
+    if resource_id_raw is not None:
+        try:
+            resource_id = int(resource_id_raw)
+        except (TypeError, ValueError):
+            return api_error(
+                "resource_id must be a positive integer.",
+                400,
+            )
+
+        if (
+            resource_id < 1
+            or resource_id > 9223372036854775807
+            or str(resource_id) != resource_id_raw
+        ):
+            return api_error(
+                "resource_id must be a positive integer.",
+                400,
+            )
+
+    # Reject unknown query parameters instead of silently ignoring them.
+    allowed_parameters = {"status", "resource_id"}
+
+    if set(request.args) - allowed_parameters:
+        return api_error(
+            "Only status and resource_id filters are supported.",
+            400,
+        )
+
+    try:
+        params = {
+            "select": (
+                "id,user_id,time_slot_id,status,created_at,cancelled_at,"
+                "slot:time_slots!inner("
+                "id,resource_id,start_time,end_time,"
+                "resource:resources!inner("
+                "id,location_id,name,"
+                "location:locations!inner(id,name,organization_id)"
+                ")"
+                ")"
+            ),
+            "order": "created_at.desc,id.desc",
+            "limit": "100",
+            "slot.resource.location.organization_id": f"eq.{g.organization['id']}",
+        }
+
+        if status_filter != "all":
+            params["status"] = f"eq.{status_filter}"
+
+        if resource_id is not None:
+            params["slot.resource_id"] = f"eq.{resource_id}"
+
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/bookings",
+            headers=g.supabase_headers,
+            params=params,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator access to bookings was denied.",
+                403,
+            )
+
+        response.raise_for_status()
+        bookings = response.json()
+
+        if not isinstance(bookings, list):
+            return api_error(
+                "Invalid administrator booking response.",
+                502,
+            )
+
+        for booking in bookings:
+            if (
+                not isinstance(booking, dict)
+                or type(booking.get("id")) is not int
+                or booking["id"] < 1
+                or type(booking.get("time_slot_id")) is not int
+                or booking["time_slot_id"] < 1
+                or booking.get("status") not in (
+                    "active",
+                    "cancelled",
+                )
+            ):
+                return api_error(
+                    "Invalid administrator booking response.",
+                    502,
+                )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "bookings": bookings,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Loading managed bookings timed out. Please try again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to load managed bookings. Please try again.",
+            502,
+        )
+@app.post("/api/admin/bookings/<int:booking_id>/cancel")
+@require_auth(admin_only=True)
+def cancel_admin_booking(booking_id):
+    """Cancel an active booking managed by the administrator."""
+
+    if (
+        type(booking_id) is not int
+        or booking_id < 1
+        or booking_id > 9223372036854775807
+    ):
+        return api_error("Invalid booking ID.", 400)
+
+    # Do not accept ownership or status information from the browser.
+    if request.content_length not in (None, 0):
+        payload = request.get_json(silent=True)
+
+        if payload not in (None, {}):
+            return api_error(
+                "This request does not accept a body.",
+                400,
+            )
+
+    try:
+        # This stays separate from cancel_own_booking.
+        # The database RPC will enforce the administrator's organization
+        # assignment and preserve the booking row/history.
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/cancel_managed_booking",
+            headers=g.supabase_headers,
+            json={"booking_id": booking_id},
+            timeout=10.0,
+        )
+
+        if missing_rpc(response):
+            return api_error("Managed cancellation is not configured. Apply migration 004.", 503)
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to cancel this booking was denied.",
+                403,
+            )
+
+        if response.status_code == 404:
+            return api_error(
+                "Booking not found or cannot be managed by this account.",
+                404,
+            )
+
+        if response.status_code in (400, 409):
+            details = response.json()
+            code = (
+                details.get("code")
+                if isinstance(details, dict)
+                else None
+            )
+
+            if code == "22023":
+                return api_error(
+                    "Invalid booking ID.",
+                    400,
+                )
+
+            if code == "P0001":
+                return api_error(
+                    "Booking not found, already cancelled, "
+                    "or cannot be managed by this account.",
+                    404,
+                )
+
+            if code in ("23505", "23514"):
+                return api_error(
+                    "The booking could not be cancelled because its "
+                    "current state has changed. Refresh the reservation list.",
+                    409,
+                )
+
+        response.raise_for_status()
+        booking = response.json()
+
+        if isinstance(booking, list):
+            if len(booking) != 1:
+                return api_error(
+                    "The cancellation result could not be confirmed.",
+                    502,
+                )
+
+            booking = booking[0]
+
+        if (
+            not isinstance(booking, dict)
+            or booking.get("id") != booking_id
+            or booking.get("status") != "cancelled"
+            or not booking.get("cancelled_at")
+        ):
+            return api_error(
+                "The cancellation result could not be confirmed. "
+                "Refresh the reservation list.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Booking cancelled successfully.",
+                "booking": booking,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Cancellation confirmation timed out. "
+            "Refresh the reservation list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the cancellation. "
+            "Refresh the reservation list before trying again.",
+            502,
+        )
 @app.post("/api/bookings/<int:booking_id>/cancel")
 @require_auth()
 def cancel_booking(booking_id):
@@ -696,6 +985,7 @@ def list_admin_locations():
             headers=g.supabase_headers,
             params={
                 "select": "id,name,address,is_active,created_at",
+                "organization_id": f"eq.{g.organization['id']}",
                 "order": "created_at.desc,id.desc",
                 "limit": "100",
             },
@@ -769,7 +1059,8 @@ def create_admin_location():
                 "Prefer": "return=representation",
             },
             params={"select": "id,name,address,is_active,created_at"},
-            json={"name": name, "address": address, "is_active": True},
+            json={"name": name, "address": address, "is_active": True,
+                  "organization_id": g.organization["id"]},
             timeout=10.0,
         )
 
@@ -829,7 +1120,138 @@ def create_admin_location():
             502,
         )
 
+@app.patch("/api/admin/locations/<int:location_id>")
+@require_auth(admin_only=True)
+def update_admin_location(location_id):
+    """Update the editable details of an existing location."""
 
+    if (
+        type(location_id) is not int
+        or location_id < 1
+        or location_id > 9223372036854775807
+    ):
+        return api_error("Invalid location ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or not payload
+        or set(payload) - {"name", "address"}
+    ):
+        return api_error(
+            "Send at least one of: name or address.",
+            400,
+        )
+
+    updates = {}
+
+    if "name" in payload:
+        name = payload["name"]
+
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name.strip()) <= 120
+        ):
+            return api_error(
+                "Location name must be between 1 and 120 characters.",
+                400,
+            )
+
+        updates["name"] = name.strip()
+
+    if "address" in payload:
+        address = payload["address"]
+
+        if address is not None:
+            if (
+                not isinstance(address, str)
+                or len(address.strip()) > 250
+            ):
+                return api_error(
+                    "Address must be text of at most 250 characters.",
+                    400,
+                )
+
+            address = address.strip() or None
+
+        updates["address"] = address
+
+    try:
+        response = httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/locations",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={
+                "id": f"eq.{location_id}",
+                "select": "id,name,address,is_active,created_at",
+            },
+            json=updates,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this location was denied.",
+                403,
+            )
+
+        if response.status_code == 409:
+            return api_error(
+                "The location could not be updated because of a data conflict.",
+                409,
+            )
+
+        response.raise_for_status()
+        locations = response.json()
+
+        if not isinstance(locations, list):
+            return api_error("Invalid location update response.", 502)
+
+        if len(locations) == 0:
+            return api_error("Location not found.", 404)
+
+        if (
+            len(locations) != 1
+            or not _is_location_record(locations[0])
+            or locations[0]["id"] != location_id
+        ):
+            return api_error(
+                "The location update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Location updated successfully.",
+                "location": locations[0],
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Location update confirmation timed out. "
+            "Refresh the location list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the location update. "
+            "Refresh the location list before trying again.",
+            502,
+        )
 def _is_resource_record(value):
     """Validate the resource fields returned to the administrator screen."""
 
@@ -868,8 +1290,9 @@ def list_admin_resources():
             params={
                 "select": (
                     "id,location_id,name,description,is_active,created_at,"
-                    "location:locations(id,name,is_active)"
+                    "location:locations!inner(id,name,is_active,organization_id)"
                 ),
+                "location.organization_id": f"eq.{g.organization['id']}",
                 "order": "created_at.desc,id.desc",
                 "limit": "100",
             },
@@ -1050,7 +1473,147 @@ def create_admin_resource():
             502,
         )
 
+@app.patch("/api/admin/resources/<int:resource_id>")
+@require_auth(admin_only=True)
+def update_admin_resource(resource_id):
+    """Update the editable details of an existing resource."""
 
+    if (
+        type(resource_id) is not int
+        or resource_id < 1
+        or resource_id > 9223372036854775807
+    ):
+        return api_error("Invalid resource ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or not payload
+        or set(payload) - {"name", "description"}
+    ):
+        return api_error(
+            "Send at least one of: name or description.",
+            400,
+        )
+
+    updates = {}
+
+    if "name" in payload:
+        name = payload["name"]
+
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name.strip()) <= 120
+        ):
+            return api_error(
+                "Resource name must be between 1 and 120 characters.",
+                400,
+            )
+
+        updates["name"] = name.strip()
+
+    if "description" in payload:
+        description = payload["description"]
+
+        if description is not None:
+            if (
+                not isinstance(description, str)
+                or len(description.strip()) > 1000
+            ):
+                return api_error(
+                    "Description must be text of at most 1000 characters.",
+                    400,
+                )
+
+            description = description.strip() or None
+
+        updates["description"] = description
+
+    try:
+        response = httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/resources",
+            headers={
+                **g.supabase_headers,
+                "Prefer": "return=representation",
+            },
+            params={
+                "id": f"eq.{resource_id}",
+                "select": (
+                    "id,location_id,name,description,"
+                    "is_active,created_at"
+                ),
+            },
+            json=updates,
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this resource was denied.",
+                403,
+            )
+
+        if response.status_code == 409:
+            return api_error(
+                "The resource could not be updated because of a data conflict.",
+                409,
+            )
+
+        response.raise_for_status()
+        resources = response.json()
+
+        if not isinstance(resources, list):
+            return api_error("Invalid resource update response.", 502)
+
+        if len(resources) == 0:
+            return api_error("Resource not found.", 404)
+
+        resource = resources[0]
+
+        if (
+            len(resources) != 1
+            or not isinstance(resource, dict)
+            or resource.get("id") != resource_id
+            or type(resource.get("location_id")) is not int
+            or not isinstance(resource.get("name"), str)
+            or not resource["name"].strip()
+            or type(resource.get("is_active")) is not bool
+        ):
+            return api_error(
+                "The resource update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Resource updated successfully.",
+                "resource": resource,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error(
+            "Resource update confirmation timed out. "
+            "Refresh the resource list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the resource update. "
+            "Refresh the resource list before trying again.",
+            502,
+        )
 def _parse_slot_timestamp(value):
     """Require an explicit timezone and normalize API timestamps to UTC."""
 
@@ -1069,7 +1632,151 @@ def _parse_slot_timestamp(value):
     except (ValueError, OverflowError) as error:
         raise ValueError("Invalid timezone-aware timestamp") from error
 
+@app.patch("/api/admin/time-slots/<int:slot_id>")
+@require_auth(admin_only=True)
+def update_admin_time_slot(slot_id):
+    """Activate or deactivate an authorized future time slot."""
 
+    if (
+        type(slot_id) is not int
+        or slot_id < 1
+        or slot_id > 9223372036854775807
+    ):
+        return api_error("Invalid time-slot ID.", 400)
+
+    payload = request.get_json(silent=True)
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"is_active"}
+        or type(payload.get("is_active")) is not bool
+    ):
+        return api_error(
+            "Send a JSON object containing only boolean is_active.",
+            400,
+        )
+
+    is_active = payload["is_active"]
+
+    try:
+        # This RPC is intentionally required instead of doing:
+        #   SELECT booking -> PATCH time_slots
+        #
+        # The database operation must atomically verify that the slot is:
+        # - owned by the administrator's organization,
+        # - still in the future,
+        # - free of an active booking,
+        # - under active parents when enabling it.
+        #
+        # Tony's database migration will provide the reviewed RPC.
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/set_managed_slot_active",
+            headers=g.supabase_headers,
+            json={
+                "slot_id": slot_id,
+                "new_is_active": is_active,
+            },
+            timeout=10.0,
+        )
+
+        if missing_rpc(response):
+            return api_error("Slot management is not configured. Apply migration 004.", 503)
+
+        if response.status_code == 401:
+            return api_error(
+                "Your session expired. Please sign in again.",
+                401,
+            )
+
+        if response.status_code == 403:
+            return api_error(
+                "Administrator permission to update this time slot was denied.",
+                403,
+            )
+
+        if response.status_code == 404:
+            return api_error(
+                "Time slot not found.",
+                404,
+            )
+
+        if response.status_code in (400, 409):
+            details = response.json()
+            code = (
+                details.get("code")
+                if isinstance(details, dict)
+                else None
+            )
+
+            if code in ("P0001", "23505", "23514"):
+                return api_error(
+                    "The time slot cannot be changed because its state "
+                    "conflicts with an active booking or current schedule.",
+                    409,
+                )
+
+            if code == "22023":
+                return api_error(
+                    "Invalid time-slot update.",
+                    400,
+                )
+
+        response.raise_for_status()
+
+        slots = response.json()
+
+        # Allow the RPC to return either one object or a one-row list.
+        if isinstance(slots, list):
+            if len(slots) != 1:
+                return api_error(
+                    "The time-slot update could not be confirmed.",
+                    502,
+                )
+
+            slot = slots[0]
+        elif isinstance(slots, dict):
+            slot = slots
+        else:
+            return api_error(
+                "The time-slot update could not be confirmed.",
+                502,
+            )
+
+        if (
+            not isinstance(slot, dict)
+            or slot.get("id") != slot_id
+            or slot.get("is_active") is not is_active
+        ):
+            return api_error(
+                "The time-slot update could not be confirmed.",
+                502,
+            )
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "message": "Time slot updated successfully.",
+                "slot": slot,
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        # The database operation may have completed even if Flask did
+        # not receive its response. Do not automatically retry a write.
+        return api_error(
+            "Time-slot update confirmation timed out. "
+            "Refresh the time-slot list before trying again.",
+            503,
+        )
+
+    except (httpx.HTTPError, ValueError):
+        return api_error(
+            "Unable to confirm the time-slot update. "
+            "Refresh the time-slot list before trying again.",
+            502,
+        )
 def _is_slot_record(value):
     """Validate the time-slot data used by the administrator screen."""
 
@@ -1110,9 +1817,10 @@ def list_admin_time_slots():
             params={
                 "select": (
                     "id,resource_id,start_time,end_time,is_active,created_at,"
-                    "resource:resources(id,location_id,name,is_active,"
-                    "location:locations(id,name,is_active)),bookings(status)"
+                    "resource:resources!inner(id,location_id,name,is_active,"
+                    "location:locations!inner(id,name,is_active,organization_id)),bookings(status)"
                 ),
+                "resource.location.organization_id": f"eq.{g.organization['id']}",
                 "start_time": f"gt.{datetime.now(timezone.utc).isoformat()}",
                 "bookings.status": "eq.active",
                 "order": "start_time.asc,id.asc",
@@ -1333,6 +2041,53 @@ def create_admin_time_slot():
             "Unable to confirm the new time slot. Refresh the time-slot list before trying again.",
             502,
         )
+
+
+@app.get("/api/admin/organization")
+@require_auth(admin_only=True)
+def admin_organization():
+    response = jsonify({"status": "ok", "organization": g.organization})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/api/admin/locations/<int:record_id>/archive", defaults={"kind": "locations", "active": False})
+@app.post("/api/admin/locations/<int:record_id>/restore", defaults={"kind": "locations", "active": True})
+@app.post("/api/admin/resources/<int:record_id>/archive", defaults={"kind": "resources", "active": False})
+@app.post("/api/admin/resources/<int:record_id>/restore", defaults={"kind": "resources", "active": True})
+@require_auth(admin_only=True)
+def set_inventory_active(record_id, kind, active):
+    """Reversible removal from booking; never delete reservation history."""
+    if record_id < 1 or record_id > 9223372036854775807:
+        return api_error("Invalid record ID.", 400)
+    if request.content_length not in (None, 0):
+        return api_error("This request does not accept a body.", 400)
+    key = "location" if kind == "locations" else "resource"
+    try:
+        response = httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/{kind}",
+            headers={**g.supabase_headers, "Prefer": "return=representation"},
+            params={"id": f"eq.{record_id}", "select": "*"},
+            json={"is_active": active}, timeout=10.0,
+        )
+        if response.status_code in (401, 403):
+            return api_error("Permission to manage this record was denied.", response.status_code)
+        if response.status_code in (400, 409):
+            return api_error("Cannot change this record. Cancel current/upcoming active reservations first; restore the parent location before restoring a room.", 409)
+        response.raise_for_status()
+        rows = response.json()
+        if rows == []:
+            return api_error("Record not found or not managed by this account.", 404)
+        if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or rows[0].get("id") != record_id or rows[0].get("is_active") is not active):
+            return api_error("Update could not be confirmed. Refresh before retrying.", 502)
+        result = jsonify({"status": "ok", key: rows[0]})
+        result.headers["Cache-Control"] = "no-store"
+        return result
+    except httpx.TimeoutException:
+        return api_error("Confirmation timed out. Refresh before retrying.", 503)
+    except (httpx.HTTPError, ValueError):
+        return api_error("Update could not be confirmed. Refresh before retrying.", 502)
 
 
 if __name__ == "__main__":

@@ -23,8 +23,8 @@ BEGIN
         RAISE EXCEPTION 'No active regular test user was found';
     END IF;
 
-    INSERT INTO public.locations (name)
-    VALUES ('Temporary booking-rule test')
+    INSERT INTO public.locations (name, organization_id)
+    VALUES ('Temporary booking-rule test', (SELECT id FROM public.organizations WHERE code = 'SDSU'))
     RETURNING id INTO test_location_id;
 
     INSERT INTO public.resources (location_id, name)
@@ -112,7 +112,7 @@ BEGIN
         RAISE EXCEPTION 'FAIL: a past slot was accepted';
 
     EXCEPTION
-        WHEN insufficient_privilege THEN
+        WHEN insufficient_privilege OR check_violation THEN
             NULL; -- Expected rejection by the booking policy.
     END;
 END;

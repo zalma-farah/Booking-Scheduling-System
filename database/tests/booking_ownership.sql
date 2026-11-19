@@ -31,8 +31,8 @@ BEGIN
         RAISE EXCEPTION 'Two different active accounts are required';
     END IF;
 
-    INSERT INTO public.locations (name)
-    VALUES ('Temporary ownership test')
+    INSERT INTO public.locations (name, organization_id)
+    VALUES ('Temporary ownership test', (SELECT id FROM public.organizations WHERE code = 'SDSU'))
     RETURNING id INTO test_location_id;
 
     INSERT INTO public.resources (location_id, name)
