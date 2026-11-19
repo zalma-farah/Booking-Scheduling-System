@@ -136,6 +136,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
   const [feedback, setFeedback] = useState(null)
   const [requiresRefresh, setRequiresRefresh] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [togglingId, setTogglingId] = useState(null) 
   const pending = useRef(false)
   const mounted = useRef(false)
   const requestKey = `${resourceVersion}:${reloadCount}`
@@ -189,6 +190,54 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
     return () => { active = false }
   }, [requestKey])
 
+  async function toggleSlots(slot){
+
+    if(togglingId !== null){
+
+      return
+    }
+
+    const turnOn = !slot.is_active
+    if(!turnOn && !window.confirm("Are you sure you want to deactivate this slot? You will not be able to book it.")){
+
+      return
+    }
+
+    setTogglingId(slot.id)
+    setFeedback(null)
+
+    try{
+      const url = '/api/admin/time-slots/' + slot.id
+      await apiRequest(url, {method: 'PATCH', body:{is_active: turnOn}})
+      if(turnOn){
+
+        setFeedback({kind:"success", message:"Slot is activated"})
+
+      } else {
+        setFeedback({kind:"success", message:"Slot is deactivated"})
+
+      } 
+    }
+    catch(err) {
+
+      if(err.status==404 || err.status==405){
+
+        setFeedback({kind:"error", message:"This action is not available"})
+
+      } else {
+
+        setFeedback({kind:"error", message:err.message || "Cannot change the slot"})
+
+      }
+    }
+
+    finally {
+      setTogglingId(null)
+      setReloadCount((count)=>count+1)
+    }
+
+  }
+ 
   function refreshSlots() {
     if (pending.current || loading) return
     setReloadCount((count) => count + 1)
@@ -233,7 +282,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
             <div className="admin-table-scroll">
               <table className="admin-directory-table admin-slot-table">
                 <caption className="admin-sr-only">Upcoming time slots and availability</caption>
-                <thead><tr><th scope="col">Room / resource</th><th scope="col">Date & time</th><th scope="col" className="admin-status-column">Availability</th></tr></thead>
+                <thead><tr><th scope="col">Room / resource</th><th scope="col">Date & time</th><th scope="col" className="admin-status-column">Availability</th><th scope="col"/></tr></thead>          
                 <tbody>{result.slots.map((slot) => {
                   const resource = slot.resource
                   const hidden = !resource || !resource.is_active || resource.location?.is_active !== true
@@ -248,6 +297,14 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
                           {resource?.location?.name && <p className="admin-resource-description">{resource.location.name}</p>}</div></div></td>
                       <td><strong className="admin-slot-date">{dateFormatter.format(start)}</strong><span className="admin-slot-time">{formatRange(start, end)}</span></td>
                       <td><span className={'admin-status ' + statusClass}>{label}</span></td>
+                      <td>
+                        <Button type="button" variant="outline" className="admin-btn admin-btn-outline"
+                        disabled={togglingId !=null || label === "Booked" || (!slot.is_active && hidden)}
+                        onClick={() =>toggleSlots(slot)} 
+                        >
+                        {togglingId === slot.id ? "Saving... " : slot.is_active ? "Deactivate" : "Activate"}
+                        </Button>
+                      </td>
                     </tr>
                   )
                 })}</tbody>
