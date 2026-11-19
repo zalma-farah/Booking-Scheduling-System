@@ -4,6 +4,7 @@ import { apiRequest } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import EditPanel from '@/components/admin/EditPanel'
 
 function isLocation(value) {
   return (
@@ -42,6 +43,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
   const [feedback, setFeedback] = useState(null)
   const [requiresRefresh, setRequiresRefresh] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
   const pending = useRef(false)
   const mounted = useRef(false)
   const requestKey = `${locationVersion}:${reloadCount}`
@@ -203,7 +205,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
             variant={createOpen ? 'outline' : 'default'}
             disabled={creating || (!createOpen && formDisabled)}
             aria-expanded={createOpen} aria-controls="resource-create-panel"
-            onClick={() => setCreateOpen((open) => !open)}>
+            onClick={() => {setEditing(null); setCreateOpen((open) => !open)}}>
             {createOpen ? <X aria-hidden="true" /> : <Plus aria-hidden="true" />}
             {createOpen ? 'Close form' : 'New room'}
           </Button>
@@ -229,7 +231,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
         </p>
       )}
 
-      <div className={'admin-directory-layout' + (createOpen ? ' is-editing' : '')}>
+      <div className={'admin-directory-layout' + (createOpen || editing ? ' is-editing' : '')}>
         <div className="admin-directory-card">
           {loading ? (
             <div role="status" className="admin-loading">
@@ -248,7 +250,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
               <table className="admin-directory-table">
                 <caption className="admin-sr-only">Saved rooms and resources</caption>
                 <thead>
-                  <tr><th scope="col">Room / resource</th><th scope="col">Location</th><th scope="col" className="admin-status-column">Status</th></tr>
+                  <tr><th scope="col">Room / resource</th><th scope="col">Location</th><th scope="col" className="admin-status-column">Status</th><th scope="col"/></tr>
                 </thead>
                 <tbody>
                   {result.resources.map((resource) => (
@@ -273,6 +275,12 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
                           {resource.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
+                      <td>
+                          <Button type="button" variant="outline" className="admin-btn admin-btn-outline" onClick={() => {setCreateOpen(false); setFeedback(null); setEditing(resource)}}
+                          >
+                          Edit
+                          </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -280,7 +288,14 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
             </div>
           )}
         </div>
+        {editing && <EditPanel key={editing.id} title="Edit Room" record={editing} detailField="description" detailLabel="Description" endpoint="/api/admin/resources" responseKey="resource" onExit={() => setEditing(null)} onSave={(updated)=>{
 
+        
+            setEditing(null)
+            setFeedback({kind:"success", message:"Room " + updated.name + " updated"})
+            setReloadCount((count)=>count+1)
+
+        }}/>}
         <aside id="resource-create-panel" className="admin-create-panel" hidden={!createOpen}
           aria-labelledby="resource-form-title">
           <div className="admin-editor-heading">
