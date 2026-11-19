@@ -4,6 +4,9 @@ import { apiRequest } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import EditPanel from '@/components/admin/EditPanel'
+import RecordAction from '@/components/admin/RecordAction'
+
 
 function isLocation(value) {
   return (
@@ -26,10 +29,12 @@ function LocationsManager({ onCreated } = {}) {
   const [feedback, setFeedback] = useState(null)
   const [requiresRefresh, setRequiresRefresh] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [editingBusy, setEditingBusy] = useState(false)
   const pending = useRef(false)
   const mounted = useRef(false)
   const loading = result.key !== reloadCount
-  const formDisabled = creating || loading || requiresRefresh || Boolean(result.error)
+  const formDisabled = creating || editingBusy || loading || requiresRefresh || Boolean(result.error)
 
   useEffect(() => {
     mounted.current = true
@@ -69,8 +74,15 @@ function LocationsManager({ onCreated } = {}) {
   }, [reloadCount])
 
   function refreshLocations() {
-    if (pending.current || loading) return
+    if (pending.current || loading || editingBusy) return
+    setEditing(null)
     setReloadCount((count) => count + 1)
+  }
+
+  function changed() {
+    setEditing(null)
+    setReloadCount(count => count + 1)
+    onCreated?.()
   }
 
   async function handleSubmit(event) {
@@ -160,15 +172,15 @@ function LocationsManager({ onCreated } = {}) {
         </div>
         <div className="admin-toolbar-actions">
           <Button type="button" variant="outline" className="admin-btn admin-btn-outline"
-            disabled={loading || creating} onClick={refreshLocations}>
+            disabled={loading || creating || editingBusy} onClick={refreshLocations}>
             <RefreshCw aria-hidden="true" />Refresh
           </Button>
           <Button type="button"
             className={'admin-btn ' + (createOpen ? 'admin-btn-outline' : 'admin-btn-primary')}
             variant={createOpen ? 'outline' : 'default'}
-            disabled={creating || (!createOpen && formDisabled)}
+            disabled={editingBusy || creating || (!createOpen && formDisabled)}
             aria-expanded={createOpen} aria-controls="location-create-panel"
-            onClick={() => setCreateOpen((open) => !open)}>
+            onClick={() => {setEditing(null); setCreateOpen((open) => !open)}}>
             {createOpen ? <X aria-hidden="true" /> : <Plus aria-hidden="true" />}
             {createOpen ? 'Close form' : 'New location'}
           </Button>
@@ -188,7 +200,7 @@ function LocationsManager({ onCreated } = {}) {
         </p>
       )}
 
-      <div className={'admin-directory-layout' + (createOpen ? ' is-editing' : '')}>
+      <div className={'admin-directory-layout' + (createOpen || editing ? ' is-editing' : '')}>
         <div className="admin-directory-card">
           {loading ? (
             <div role="status" className="admin-loading">
@@ -207,7 +219,7 @@ function LocationsManager({ onCreated } = {}) {
               <table className="admin-directory-table">
                 <caption className="admin-sr-only">Saved locations</caption>
                 <thead>
-                  <tr><th scope="col">Location</th><th scope="col">Address</th><th scope="col" className="admin-status-column">Status</th></tr>
+                  <tr><th scope="col">Location</th><th scope="col">Address</th><th scope="col" className="admin-status-column">Status</th><th scope="col">Actions</th></tr>
                 </thead>
                 <tbody>
                   {result.locations.map((location) => (
@@ -224,6 +236,17 @@ function LocationsManager({ onCreated } = {}) {
                           {location.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
+                      <td>
+                        <Button type="button" disabled={editingBusy || creating || requiresRefresh} variant="outline" className="admin-btn admin-btn-outline" onClick={() => {setCreateOpen(false); setFeedback(null); setEditing(location)}}
+                        >
+                        Edit
+                        </Button>
+                        <RecordAction key={`${location.id}:${reloadCount}`} label={location.is_active ? 'Archive location' : 'Restore location'}
+                          endpoint={`/api/admin/locations/${location.id}/${location.is_active ? 'archive' : 'restore'}`}
+                          responseKey="location" recordId={location.id} expected={!location.is_active}
+                          description="This changes visibility for this location and its rooms. History is preserved; current/upcoming reservations must be cancelled first. Restoring makes active child rooms visible again."
+                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy} onChanged={changed} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -231,7 +254,11 @@ function LocationsManager({ onCreated } = {}) {
             </div>
           )}
         </div>
-
+        {editing && <EditPanel key={editing.id} title="Edit Location" record={editing} detailField="address" detailLabel="Address" endpoint="/api/admin/locations" responseKey="location" onBusyChange={setEditingBusy} onReload={refreshLocations} onExit={() => setEditing(null)} onSave={(updated)=> {
+          setEditing(null)
+          setFeedback({kind:"success", message:"Location " + updated.name + " updated"})
+          changed()
+        }} />}
         <aside id="location-create-panel" className="admin-create-panel" hidden={!createOpen}
           aria-labelledby="location-form-title">
           <div className="admin-editor-heading">

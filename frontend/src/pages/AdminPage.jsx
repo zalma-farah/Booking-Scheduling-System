@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { ArrowLeft, ArrowUpRight, Building2, CalendarDays, MapPin, Settings2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -7,9 +7,12 @@ import AuthApiCheck from '@/components/AuthApiCheck'
 import LocationsManager from '@/components/admin/LocationsManager'
 import ResourcesManager from '@/components/admin/ResourcesManager'
 import TimeSlotsManager from '@/components/admin/TimeSlotsManager'
+import ReservationsManager from '@/components/admin/ReservationsManager'
+import { apiRequest } from '@/lib/api'
 import '@/styles/admin.css'
 
 const sections = [
+  { key: 'reservations', label: 'Reservations', icon: CalendarDays, title: 'Reservations', description: 'Review and cancel reservations for your assigned university.' },
   {
     key: 'locations',
     label: 'Locations',
@@ -41,12 +44,31 @@ const sections = [
 ]
 
 function AdminPage() {
-  const { user } = useAuth()
+  const { user, signOut } = useAuth()
+  const [organization, setOrganization] = useState(null)
+  const [setupError, setSetupError] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
+  useEffect(() => {
+    let active = true
+    apiRequest('/api/admin/organization').then(data => {
+      if (!data.organization || typeof data.organization.name !== 'string') throw new Error('Invalid university response.')
+      if (active) setOrganization(data.organization)
+    }).catch(error => { if (active) setSetupError(error.message || 'Unable to verify university assignment.') })
+    return () => { active = false }
+  }, [])
+  async function leave() {
+    setSigningOut(true)
+    try {
+      const { error } = await signOut()
+      if (error) setSetupError(error.message)
+    } catch { setSetupError('Unable to sign out. Please try again.') }
+    finally { setSigningOut(false) }
+  }
   const [locationVersion, setLocationVersion] = useState(0)
   const [resourceVersion, setResourceVersion] = useState(0)
   const [searchParams] = useSearchParams()
   const currentSection =
-    sections.find((section) => section.key === searchParams.get('section')) ?? sections[0]
+    sections.find((section) => section.key === searchParams.get('section')) ?? sections[1]
 
   return (
     <div className="admin-shell">
@@ -94,7 +116,8 @@ function AdminPage() {
 
         <nav className="admin-utility-nav" aria-label="Other pages">
           <Link to="/bookings"><CalendarDays aria-hidden="true" />My bookings</Link>
-          <Link to="/dashboard"><ArrowLeft aria-hidden="true" />Back to dashboard</Link>
+          <Link to="/resources"><ArrowLeft aria-hidden="true" />Personal booking area</Link>
+          <Button variant="outline" disabled={signingOut} onClick={leave}>{signingOut ? 'Signing out...' : 'Sign out'}</Button>
         </nav>
 
         <div className="admin-profile">
@@ -122,11 +145,15 @@ function AdminPage() {
         <div className="admin-content">
           <header className="admin-page-heading">
             <p className="admin-eyebrow">Workspace</p>
+            <p>{organization?.name || 'Verifying university assignment...'}</p>
             <h1>{currentSection.title}</h1>
             <p>{currentSection.description}</p>
           </header>
 
-          {/* Keep managers mounted so navigation does not discard a pending form. */}
+          {setupError && <p role="alert" className="admin-notice is-error">{setupError}</p>}
+          {/* Keep managers mounted after trusted context is loaded. */}
+          {organization && <>
+          <div hidden={currentSection.key !== 'reservations'}><ReservationsManager /></div>
           <div hidden={currentSection.key !== 'locations'}>
             <LocationsManager
               key={`locations:${user?.id ?? 'signed-out'}`}
@@ -154,6 +181,7 @@ function AdminPage() {
             <p>These tools test your connection. They do not change locations, rooms, or bookings.</p>
             <AuthApiCheck />
           </section>
+          </>}
         </div>
       </main>
     </div>

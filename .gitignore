@@ -8,4 +8,10 @@ backend/.venv/
 backend/.env
 backend/__pycache__/
 *.pyc
+**/.pytest_cache/
+**/__pycache__/
+**/.env
+**/.env.e2e
+**/.venv/
 .vscode/
+**/node_modules/

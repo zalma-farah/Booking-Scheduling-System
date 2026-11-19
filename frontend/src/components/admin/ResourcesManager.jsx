@@ -4,6 +4,8 @@ import { apiRequest } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import EditPanel from '@/components/admin/EditPanel'
+import RecordAction from '@/components/admin/RecordAction'
 
 function isLocation(value) {
   return (
@@ -42,6 +44,8 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
   const [feedback, setFeedback] = useState(null)
   const [requiresRefresh, setRequiresRefresh] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [editingBusy, setEditingBusy] = useState(false)
   const pending = useRef(false)
   const mounted = useRef(false)
   const requestKey = `${locationVersion}:${reloadCount}`
@@ -51,7 +55,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
     (location) => String(location.id) === form.locationId
   )
   const formDisabled =
-    creating || loading || requiresRefresh || Boolean(result.error) || activeLocations.length === 0
+    creating || editingBusy || loading || requiresRefresh || Boolean(result.error) || activeLocations.length === 0
 
   useEffect(() => {
     mounted.current = true
@@ -105,6 +109,8 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
   }, [requestKey])
 
   function refreshResources() {
+    if (editingBusy) return
+    setEditing(null)
     if (pending.current || loading) return
     setReloadCount((count) => count + 1)
   }
@@ -195,15 +201,15 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
         </div>
         <div className="admin-toolbar-actions">
           <Button type="button" variant="outline" className="admin-btn admin-btn-outline"
-            disabled={loading || creating} onClick={refreshResources}>
+            disabled={loading || creating || editingBusy} onClick={refreshResources}>
             <RefreshCw aria-hidden="true" />Refresh
           </Button>
           <Button type="button"
             className={'admin-btn ' + (createOpen ? 'admin-btn-outline' : 'admin-btn-primary')}
             variant={createOpen ? 'outline' : 'default'}
-            disabled={creating || (!createOpen && formDisabled)}
+            disabled={editingBusy || creating || (!createOpen && formDisabled)}
             aria-expanded={createOpen} aria-controls="resource-create-panel"
-            onClick={() => setCreateOpen((open) => !open)}>
+            onClick={() => { setEditing(null); setCreateOpen((open) => !open) }}>
             {createOpen ? <X aria-hidden="true" /> : <Plus aria-hidden="true" />}
             {createOpen ? 'Close form' : 'New room'}
           </Button>
@@ -229,7 +235,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
         </p>
       )}
 
-      <div className={'admin-directory-layout' + (createOpen ? ' is-editing' : '')}>
+      <div className={'admin-directory-layout' + (createOpen || editing ? ' is-editing' : '')}>
         <div className="admin-directory-card">
           {loading ? (
             <div role="status" className="admin-loading">
@@ -272,6 +278,14 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
                         <span className={'admin-status ' + (resource.is_active ? 'is-active' : 'is-inactive')}>
                           {resource.is_active ? 'Active' : 'Inactive'}
                         </span>
+                        <Button type="button" variant="outline" disabled={editingBusy || creating || requiresRefresh}
+                          onClick={() => { setCreateOpen(false); setEditing(resource) }}>Edit room</Button>
+                        <RecordAction key={`${resource.id}:${reloadCount}`} label={resource.is_active ? 'Archive room' : 'Restore room'}
+                          endpoint={`/api/admin/resources/${resource.id}/${resource.is_active ? 'archive' : 'restore'}`}
+                          responseKey="resource" recordId={resource.id} expected={!resource.is_active}
+                          description="This changes booking visibility, not history. Cancel current/upcoming reservations first. Restoring makes existing active future slots bookable again."
+                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy}
+                          onChanged={() => { setReloadCount(c => c + 1); onCreated?.() }} />
                       </td>
                     </tr>
                   ))}
@@ -281,6 +295,9 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
           )}
         </div>
 
+        {editing && <EditPanel key={editing.id} title="Edit room" record={editing} detailField="description" detailLabel="Description"
+          endpoint="/api/admin/resources" responseKey="resource" onBusyChange={setEditingBusy} onExit={() => setEditing(null)} onReload={refreshResources}
+          onSave={() => { setEditing(null); setReloadCount(c => c + 1); onCreated?.() }} />}
         <aside id="resource-create-panel" className="admin-create-panel" hidden={!createOpen}
           aria-labelledby="resource-form-title">
           <div className="admin-editor-heading">
