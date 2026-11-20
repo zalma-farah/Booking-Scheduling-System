@@ -979,6 +979,10 @@ def _is_location_record(value):
 def list_admin_locations():
     """List the latest locations, including inactive ones, for administrators."""
 
+    state = request.args.get("state", "all")
+    if state not in ("all", "active", "archived") or len(request.args.getlist("state")) > 1:
+        return api_error("State must be active, archived, or all.", 400)
+    state_filter = {} if state == "all" else {"is_active": "eq.true" if state == "active" else "eq.false"}
     try:
         response = httpx.get(
             f"{SUPABASE_URL}/rest/v1/locations",
@@ -986,6 +990,7 @@ def list_admin_locations():
             params={
                 "select": "id,name,address,is_active,created_at",
                 "organization_id": f"eq.{g.organization['id']}",
+                **state_filter,
                 "order": "created_at.desc,id.desc",
                 "limit": "100",
             },
@@ -1283,6 +1288,10 @@ def _is_resource_record(value):
 def list_admin_resources():
     """List the latest resources, including inactive ones, for administrators."""
 
+    state = request.args.get("state", "all")
+    if state not in ("all", "active", "archived") or len(request.args.getlist("state")) > 1:
+        return api_error("State must be active, archived, or all.", 400)
+    state_filter = {} if state == "all" else {"is_active": "eq.true" if state == "active" else "eq.false"}
     try:
         response = httpx.get(
             f"{SUPABASE_URL}/rest/v1/resources",
@@ -1293,6 +1302,7 @@ def list_admin_resources():
                     "location:locations!inner(id,name,is_active,organization_id)"
                 ),
                 "location.organization_id": f"eq.{g.organization['id']}",
+                **state_filter,
                 "order": "created_at.desc,id.desc",
                 "limit": "100",
             },
@@ -2088,6 +2098,52 @@ def set_inventory_active(record_id, kind, active):
         return api_error("Confirmation timed out. Refresh before retrying.", 503)
     except (httpx.HTTPError, ValueError):
         return api_error("Update could not be confirmed. Refresh before retrying.", 502)
+
+
+@app.delete("/api/admin/locations/<int:record_id>", defaults={"kind": "locations"})
+@app.delete("/api/admin/resources/<int:record_id>", defaults={"kind": "resources"})
+@require_auth(admin_only=True)
+def delete_archived_inventory(record_id, kind):
+    """Explicit, non-cascading deletion; the RPC rechecks scope and children."""
+    if record_id < 1 or record_id > 9223372036854775807:
+        return api_error("Invalid record ID.", 400)
+    if request.get_json(silent=True) != {"confirmation": "DELETE"}:
+        return api_error('Confirm permanent deletion with {"confirmation":"DELETE"}.', 400)
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/delete_archived_inventory",
+            headers=g.supabase_headers,
+            json={"record_kind": kind, "record_id": record_id}, timeout=10.0,
+        )
+        if missing_rpc(response):
+            return api_error("Safe deletion is not installed. Apply migration 005 before using this action.", 503)
+        if response.status_code >= 400:
+            try:
+                problem = response.json()
+            except ValueError:
+                problem = {}
+            code = problem.get("code") if isinstance(problem, dict) else None
+            if code == "42501":
+                return api_error("Record not found or not managed by this account.", 404)
+            if code in ("23514", "23503"):
+                return api_error("Only archived, empty records can be deleted. Locations must have no rooms; rooms must have no time slots or booking history. Otherwise keep the record archived.", 409)
+            if code == "22023":
+                return api_error("Invalid deletion request.", 400)
+            if response.status_code in (401, 403):
+                return api_error("Permission to delete this record was denied.", response.status_code)
+        response.raise_for_status()
+        deleted = response.json()
+        if (not isinstance(deleted, dict) or type(deleted.get("id")) is not int
+            or deleted["id"] != record_id or deleted.get("type") != kind
+            or deleted.get("deleted") is not True):
+            return api_error("Deletion could not be confirmed. Refresh before retrying.", 502)
+        result = jsonify({"status": "ok", "deleted": deleted})
+        result.headers["Cache-Control"] = "no-store"
+        return result
+    except httpx.TimeoutException:
+        return api_error("Deletion confirmation timed out. Refresh before retrying; it may already have succeeded.", 503)
+    except (httpx.HTTPError, ValueError):
+        return api_error("Deletion could not be confirmed. Refresh before retrying.", 502)
 
 
 if __name__ == "__main__":

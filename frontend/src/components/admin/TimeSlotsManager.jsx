@@ -169,7 +169,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
   useEffect(() => {
     let active = true
 
-    Promise.all([apiRequest('/api/admin/resources'), apiRequest('/api/admin/time-slots')])
+    Promise.all([apiRequest('/api/admin/resources?state=active'), apiRequest('/api/admin/time-slots')])
       .then(([resourceData, slotData]) => {
         if (
           !Array.isArray(resourceData.resources) || !resourceData.resources.every(isResource) ||
@@ -235,7 +235,7 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
             <div className="admin-table-scroll">
               <table className="admin-directory-table admin-slot-table">
                 <caption className="admin-sr-only">Upcoming time slots and availability</caption>
-                <thead><tr><th scope="col">Room / resource</th><th scope="col">Date & time</th><th scope="col" className="admin-status-column">Availability</th></tr></thead>
+                <thead><tr><th scope="col">Room / resource</th><th scope="col">Date & time</th><th scope="col" className="admin-status-column">Availability</th><th scope="col">Actions</th></tr></thead>
                 <tbody>{result.slots.map((slot) => {
                   const resource = slot.resource
                   const hidden = !resource || !resource.is_active || resource.location?.is_active !== true
@@ -249,12 +249,15 @@ function TimeSlotsManager({ resourceVersion = 0 } = {}) {
                         <div><strong>{resource?.name || 'Resource #' + slot.resource_id}</strong><small>Slot #{slot.id}</small>
                           {resource?.location?.name && <p className="admin-resource-description">{resource.location.name}</p>}</div></div></td>
                       <td><strong className="admin-slot-date">{dateFormatter.format(start)}</strong><span className="admin-slot-time">{formatRange(start, end)}</span></td>
-                      <td><span className={'admin-status ' + statusClass}>{label}</span>
+                      <td><span className={'admin-status ' + statusClass}>{label}</span></td>
+                      <td className="admin-actions-cell"><div className="admin-row-actions">
                         {label !== 'Booked' && <RecordAction key={`${slot.id}:${requestKey}`} label={slot.is_active ? 'Deactivate slot' : 'Activate slot'}
                           endpoint={`/api/admin/time-slots/${slot.id}`} responseKey="slot" recordId={slot.id} expected={!slot.is_active}
                           description="Only future slots without an active reservation can change. The slot and its history remain saved."
-                          disabled={creating || updating || requiresRefresh} onBusyChange={setUpdating} onChanged={() => setReloadCount(c => c + 1)} />}
-                      </td>
+                          disabled={creating || updating || requiresRefresh || (hidden && !slot.is_active)} onBusyChange={setUpdating} onChanged={() => setReloadCount(c => c + 1)} />}
+                        {hidden && !slot.is_active && <small className="admin-parent-warning">Restore the location and room first.</small>}
+                        {label === 'Booked' && <small>Manage under Reservations</small>}
+                      </div></td>
                     </tr>
                   )
                 })}</tbody>
