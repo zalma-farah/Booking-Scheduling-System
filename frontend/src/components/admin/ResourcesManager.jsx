@@ -39,6 +39,7 @@ function isResource(value) {
 function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
   const [form, setForm] = useState({ locationId: '', name: '', description: '' })
   const [reloadCount, setReloadCount] = useState(0)
+  const [visibility, setVisibility] = useState('active')
   const [result, setResult] = useState({ key: '', locations: [], resources: [], error: '' })
   const [creating, setCreating] = useState(false)
   const [feedback, setFeedback] = useState(null)
@@ -48,7 +49,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
   const [editingBusy, setEditingBusy] = useState(false)
   const pending = useRef(false)
   const mounted = useRef(false)
-  const requestKey = `${locationVersion}:${reloadCount}`
+  const requestKey = `${visibility}:${locationVersion}:${reloadCount}`
   const loading = result.key !== requestKey
   const activeLocations = result.locations.filter((location) => location.is_active)
   const selectedLocation = activeLocations.find(
@@ -69,8 +70,8 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
     let active = true
 
     Promise.all([
-      apiRequest('/api/admin/locations'),
-      apiRequest('/api/admin/resources'),
+      apiRequest('/api/admin/locations?state=active'),
+      apiRequest(`/api/admin/resources?state=${visibility}`),
     ])
       .then(([locationData, resourceData]) => {
         if (
@@ -106,7 +107,7 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
     return () => {
       active = false
     }
-  }, [requestKey])
+  }, [requestKey, visibility])
 
   function refreshResources() {
     if (editingBusy) return
@@ -216,6 +217,12 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
         </div>
       </div>
 
+      <div className="admin-inventory-filters" role="group" aria-label="Room visibility">
+        {['active', 'archived'].map(state => <Button key={state} type="button" variant="outline" className="admin-filter-button"
+          aria-pressed={visibility === state} disabled={loading || creating || editingBusy}
+          onClick={() => { setEditing(null); setCreateOpen(false); setFeedback(null); setVisibility(state) }}>{state === 'active' ? 'Active' : 'Archived'}</Button>)}
+      </div>
+
       {feedback && (
         <div role={feedback.kind === 'success' ? 'status' : 'alert'}
           className={'admin-notice ' + (feedback.kind === 'success' ? 'is-success' : 'is-error')}>
@@ -246,15 +253,15 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
           ) : result.resources.length === 0 ? (
             <div className="admin-empty">
               <span className="admin-empty-icon"><Building2 aria-hidden="true" /></span>
-              <h3>No rooms or resources yet</h3>
-              <p>Use New room to add a bookable space to a location.</p>
+              <h3>{visibility === 'active' ? 'No active rooms or resources' : 'No archived rooms or resources'}</h3>
+              <p>{visibility === 'active' ? 'Add a room or switch to Archived to restore one. Its parent location must also be active.' : 'Archived rooms appear here. Rooms with time slots or history must stay archived.'}</p>
             </div>
           ) : (
             <div className="admin-table-scroll">
               <table className="admin-directory-table">
                 <caption className="admin-sr-only">Saved rooms and resources</caption>
                 <thead>
-                  <tr><th scope="col">Room / resource</th><th scope="col">Location</th><th scope="col" className="admin-status-column">Status</th></tr>
+                  <tr><th scope="col">Room / resource</th><th scope="col">Location</th><th scope="col" className="admin-status-column">Status</th><th scope="col">Actions</th></tr>
                 </thead>
                 <tbody>
                   {result.resources.map((resource) => (
@@ -275,18 +282,25 @@ function ResourcesManager({ locationVersion = 0, onCreated } = {}) {
                         )}
                       </td>
                       <td>
-                        <span className={'admin-status ' + (resource.is_active ? 'is-active' : 'is-inactive')}>
-                          {resource.is_active ? 'Active' : 'Inactive'}
+                        <span className={'admin-status ' + (resource.is_active && resource.location?.is_active !== false ? 'is-active' : 'is-inactive')}>
+                          {!resource.is_active ? 'Archived' : resource.location?.is_active === false ? 'Hidden' : 'Active'}
                         </span>
-                        <Button type="button" variant="outline" disabled={editingBusy || creating || requiresRefresh}
+                      </td>
+                      <td className="admin-actions-cell"><div className="admin-row-actions">
+                        <Button type="button" className="admin-btn admin-btn-outline" variant="outline" disabled={editingBusy || creating || requiresRefresh}
                           onClick={() => { setCreateOpen(false); setEditing(resource) }}>Edit room</Button>
                         <RecordAction key={`${resource.id}:${reloadCount}`} label={resource.is_active ? 'Archive room' : 'Restore room'}
                           endpoint={`/api/admin/resources/${resource.id}/${resource.is_active ? 'archive' : 'restore'}`}
                           responseKey="resource" recordId={resource.id} expected={!resource.is_active}
                           description="This changes booking visibility, not history. Cancel current/upcoming reservations first. Restoring makes existing active future slots bookable again."
-                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy}
+                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh || (!resource.is_active && resource.location?.is_active === false)} onBusyChange={setEditingBusy}
                           onChanged={() => { setReloadCount(c => c + 1); onCreated?.() }} />
-                      </td>
+                        {!resource.is_active && <RecordAction key={`delete:${resource.id}:${requestKey}`} label="Delete permanently" deleting recordType="resources"
+                          endpoint={`/api/admin/resources/${resource.id}`} recordId={resource.id}
+                          description={`Permanently delete room "${resource.name}"? This cannot be undone. A room with any time slots or booking history cannot be deleted and must stay archived.`}
+                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy}
+                          onChanged={() => { setReloadCount(c => c + 1); onCreated?.() }} />}
+                      </div></td>
                     </tr>
                   ))}
                 </tbody>

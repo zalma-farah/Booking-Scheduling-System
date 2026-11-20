@@ -24,6 +24,7 @@ function isLocation(value) {
 function LocationsManager({ onCreated } = {}) {
   const [form, setForm] = useState({ name: '', address: '' })
   const [reloadCount, setReloadCount] = useState(0)
+  const [visibility, setVisibility] = useState('active')
   const [result, setResult] = useState({ key: -1, locations: [], error: '' })
   const [creating, setCreating] = useState(false)
   const [feedback, setFeedback] = useState(null)
@@ -33,7 +34,8 @@ function LocationsManager({ onCreated } = {}) {
   const [editingBusy, setEditingBusy] = useState(false)
   const pending = useRef(false)
   const mounted = useRef(false)
-  const loading = result.key !== reloadCount
+  const requestKey = `${visibility}:${reloadCount}`
+  const loading = result.key !== requestKey
   const formDisabled = creating || editingBusy || loading || requiresRefresh || Boolean(result.error)
 
   useEffect(() => {
@@ -47,21 +49,21 @@ function LocationsManager({ onCreated } = {}) {
   useEffect(() => {
     let active = true
 
-    apiRequest('/api/admin/locations')
+    apiRequest(`/api/admin/locations?state=${visibility}`)
       .then((data) => {
         if (!Array.isArray(data.locations) || !data.locations.every(isLocation)) {
           throw new Error('The server returned an invalid location list.')
         }
 
         if (active) {
-          setResult({ key: reloadCount, locations: data.locations, error: '' })
+          setResult({ key: requestKey, locations: data.locations, error: '' })
           setRequiresRefresh(false)
         }
       })
       .catch((requestError) => {
         if (active) {
           setResult({
-            key: reloadCount,
+            key: requestKey,
             locations: [],
             error: requestError?.message || 'Unable to load locations.',
           })
@@ -71,7 +73,7 @@ function LocationsManager({ onCreated } = {}) {
     return () => {
       active = false
     }
-  }, [reloadCount])
+  }, [reloadCount, visibility, requestKey])
 
   function refreshLocations() {
     if (pending.current || loading || editingBusy) return
@@ -187,6 +189,12 @@ function LocationsManager({ onCreated } = {}) {
         </div>
       </div>
 
+      <div className="admin-inventory-filters" role="group" aria-label="Location visibility">
+        {['active', 'archived'].map(state => <Button key={state} type="button" variant="outline" className="admin-filter-button"
+          aria-pressed={visibility === state} disabled={loading || creating || editingBusy}
+          onClick={() => { setEditing(null); setCreateOpen(false); setFeedback(null); setVisibility(state) }}>{state === 'active' ? 'Active' : 'Archived'}</Button>)}
+      </div>
+
       {feedback && (
         <div role={feedback.kind === 'success' ? 'status' : 'alert'}
           className={'admin-notice ' + (feedback.kind === 'success' ? 'is-success' : 'is-error')}>
@@ -211,8 +219,8 @@ function LocationsManager({ onCreated } = {}) {
           ) : result.locations.length === 0 ? (
             <div className="admin-empty">
               <span className="admin-empty-icon"><MapPin aria-hidden="true" /></span>
-              <h3>No locations yet</h3>
-              <p>Use New location to add your first building or site.</p>
+              <h3>{visibility === 'active' ? 'No active locations' : 'No archived locations'}</h3>
+              <p>{visibility === 'active' ? 'Add a location or switch to Archived to restore one.' : 'Archived locations appear here. History remains saved.'}</p>
             </div>
           ) : (
             <div className="admin-table-scroll">
@@ -233,10 +241,10 @@ function LocationsManager({ onCreated } = {}) {
                       <td><span className="admin-address">{location.address || 'No address provided.'}</span></td>
                       <td>
                         <span className={'admin-status ' + (location.is_active ? 'is-active' : 'is-inactive')}>
-                          {location.is_active ? 'Active' : 'Inactive'}
+                          {location.is_active ? 'Active' : 'Archived'}
                         </span>
                       </td>
-                      <td>
+                      <td className="admin-actions-cell"><div className="admin-row-actions">
                         <Button type="button" disabled={editingBusy || creating || requiresRefresh} variant="outline" className="admin-btn admin-btn-outline" onClick={() => {setCreateOpen(false); setFeedback(null); setEditing(location)}}
                         >
                         Edit
@@ -246,7 +254,11 @@ function LocationsManager({ onCreated } = {}) {
                           responseKey="location" recordId={location.id} expected={!location.is_active}
                           description="This changes visibility for this location and its rooms. History is preserved; current/upcoming reservations must be cancelled first. Restoring makes active child rooms visible again."
                           disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy} onChanged={changed} />
-                      </td>
+                        {!location.is_active && <RecordAction key={`delete:${location.id}:${requestKey}`} label="Delete permanently" deleting recordType="locations"
+                          endpoint={`/api/admin/locations/${location.id}`} recordId={location.id}
+                          description={`Permanently delete location "${location.name}"? This cannot be undone. Deletion is allowed only when it has no rooms. Anything with rooms/history must stay archived.`}
+                          disabled={Boolean(editing) || editingBusy || creating || requiresRefresh} onBusyChange={setEditingBusy} onChanged={changed} />}
+                      </div></td>
                     </tr>
                   ))}
                 </tbody>
