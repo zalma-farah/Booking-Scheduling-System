@@ -2146,6 +2146,96 @@ def delete_archived_inventory(record_id, kind):
         return api_error("Deletion could not be confirmed. Refresh before retrying.", 502)
 
 
+def _validate_kiosk_snapshot(value, resource_id):
+    """Whitelist public fields. Invalid schedules must never become 'available'."""
+    if not isinstance(value, dict) or value.get("timezone") != "America/Los_Angeles":
+        raise ValueError("Invalid kiosk timezone")
+    resource = value.get("resource")
+    if (not isinstance(resource, dict) or type(resource.get("id")) is not int
+        or resource["id"] != resource_id or not isinstance(resource.get("name"), str)
+        or not resource["name"].strip()):
+        raise ValueError("Invalid kiosk resource")
+    location = resource.get("location")
+    if (not isinstance(location, dict) or type(location.get("id")) is not int
+        or location["id"] < 1 or not isinstance(location.get("name"), str)
+        or not location["name"].strip()):
+        raise ValueError("Invalid kiosk location")
+    checked = _parse_slot_timestamp(value.get("checked_at"))
+    day_start = _parse_slot_timestamp(value.get("day_start"))
+    day_end = _parse_slot_timestamp(value.get("day_end"))
+    if not day_start <= checked < day_end or not timedelta(hours=23) <= day_end-day_start <= timedelta(hours=25):
+        raise ValueError("Invalid kiosk day")
+    rows = value.get("slots")
+    if not isinstance(rows, list) or len(rows) > 500:
+        raise ValueError("Invalid kiosk schedule size")
+    slots, seen = [], set()
+    for row in rows:
+        if (not isinstance(row, dict) or type(row.get("id")) is not int
+            or row["id"] < 1 or row["id"] > 9007199254740991
+            or row["id"] in seen or type(row.get("is_booked")) is not bool):
+            raise ValueError("Invalid kiosk slot")
+        start = _parse_slot_timestamp(row.get("start_time"))
+        end = _parse_slot_timestamp(row.get("end_time"))
+        if not start < end or start >= day_end or end <= day_start:
+            raise ValueError("Invalid kiosk time range")
+        seen.add(row["id"])
+        slots.append({"id": row["id"], "start_time": start.isoformat(),
+                      "end_time": end.isoformat(), "is_booked": row["is_booked"]})
+    slots.sort(key=lambda slot: (slot["start_time"], slot["id"]))
+    if any(slots[i]["start_time"] < slots[i-1]["end_time"] for i in range(1, len(slots))):
+        raise ValueError("Overlapping kiosk schedule")
+    current = next((slot for slot in slots if slot["is_booked"]
+                    and _parse_slot_timestamp(slot["start_time"]) <= checked < _parse_slot_timestamp(slot["end_time"])), None)
+    upcoming = next((slot for slot in slots if slot["is_booked"]
+                     and _parse_slot_timestamp(slot["start_time"]) > checked), None)
+    return {
+        "status": "ok", "timezone": "America/Los_Angeles",
+        "checked_at": checked.isoformat(), "day_start": day_start.isoformat(), "day_end": day_end.isoformat(),
+        "resource": {"id": resource_id, "name": resource["name"],
+                     "location": {"id": location["id"], "name": location["name"]}},
+        "state": "in_use" if current else "available",
+        "current_slot": current, "next_booked_slot": upcoming, "slots": slots,
+    }
+
+
+@app.get("/api/resources/<int:resource_id>/status")
+@require_auth()
+def get_resource_status(resource_id):
+    """Authenticated, privacy-limited room schedule for the display-only kiosk."""
+    def failure(message, status):
+        result, code = api_error(message, status)
+        result.headers["Cache-Control"] = "no-store"
+        return result, code
+
+    if resource_id < 1 or resource_id > 9007199254740991:
+        return failure("Invalid resource ID.", 400)
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/get_room_kiosk_status",
+            headers=g.supabase_headers, json={"p_resource_id": resource_id}, timeout=10.0,
+        )
+        if missing_rpc(response):
+            return failure("Kiosk status is not installed. Apply migration 006 once after 005.", 503)
+        if response.status_code >= 400:
+            try:
+                problem = response.json()
+            except ValueError:
+                problem = {}
+            code = problem.get("code") if isinstance(problem, dict) else None
+            if code == "P0002":
+                return failure("Room unavailable or not found.", 404)
+            if response.status_code in (401, 403):
+                return failure("Sign in with an active account to view room status.", response.status_code)
+        response.raise_for_status()
+        result = jsonify(_validate_kiosk_snapshot(response.json(), resource_id))
+        result.headers["Cache-Control"] = "no-store"
+        return result
+    except httpx.TimeoutException:
+        return failure("Loading room status timed out. Please retry.", 503)
+    except (httpx.HTTPError, ValueError, OverflowError):
+        return failure("Room status could not be verified. Please retry.", 502)
+
+
 if __name__ == "__main__":
     # Local development only.
     app.run(debug=True, port=5000)

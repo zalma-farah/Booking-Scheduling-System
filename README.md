@@ -18,6 +18,7 @@ Earlier integration work was reviewed at these commits:
 | sketchie-backend-api | 5ec1ea5 | Admin editing, slot/reservation endpoints and Python tests |
 | admin-pages | 2adcf91 | Location Edit buttons |
 | samir-ui-workflow-tests | ee2627c | Browser/mobile/accessibility test setup |
+| Marie | 2014fab | Room-availability display idea and base UI, adapted onto current main |
 
 Additional fixes: university scoping, migrations 003/004/005, archive/restore,
 room editing, reservation panel, safe edit retry/pending behavior, test setup.
@@ -38,6 +39,7 @@ Implemented features:
 - Active/Archived inventory filters and typed confirmation for permanent deletion
   of empty archived rooms or locations, restricted to the admin's university.
 - Matching personal dashboard, resource browsing and My bookings navigation/styles.
+- Display-only signed-in room kiosk with a read-only status API (migration 006).
 - University reservation listing and cancellation, separate from personal My bookings.
 - Repeatable Python unit tests, embedded database checks and Playwright scenarios.
 
@@ -54,7 +56,8 @@ Still required before the showcase:
    by the development commands below.
 6. Final presentation, video, summary and any instructor-required contribution/AI-use records.
 
-RFID/kiosk work is not included. Confirm the exact due date/rubric; do not assume
+RFID/card check-in is not included; the room-status display is described below.
+Confirm the exact due date/rubric; do not assume
 hardware or an optional feature is required without checking with the instructor.
 
 ## Team ownership
@@ -117,7 +120,7 @@ Administrators without an explicit assignment will lose management access by des
 Every existing location is assigned to SDSU, as confirmed by the project owner.
 Running the setup/migration scripts does not delete inventory or booking history.
 
-For a NEW database, apply `database/schema.sql`, then migrations 001 through 005
+For a NEW database, apply `database/schema.sql`, then migrations 001 through 006
 in numerical order in the Supabase SQL Editor as the trusted database owner.
 For an existing database, do NOT rerun `schema.sql` or successful migrations.
 Apply only missing upgrades, in order, during a coordinated pause in app writes:
@@ -125,11 +128,12 @@ Apply only missing upgrades, in order, during a coordinated pause in app writes:
 1. `database/migrations/003_organization_access.sql`
 2. `database/migrations/004_managed_operations.sql`
 3. `database/migrations/005_safe_inventory_deletion.sql`
-4. Edit the placeholders in `database/setup/assign_organization_admin.sql` and
+4. `database/migrations/006_room_kiosk_status.sql`
+5. Edit the placeholders in `database/setup/assign_organization_admin.sql` and
    run it as the trusted database owner for each existing administrator.
 
-If the current database already has 003/004, install only 005. If 005 already
-succeeded, there is no SQL to run for this tests/README update. An "already
+If the current database already has 003/004, install missing upgrades 005 and 006
+in that order. If 005 already succeeded, skip it and install only 006. An "already
 exists" error on a repeated `CREATE FUNCTION` does not mean you should drop the
 function or reset the schema. Stop and verify rather than rerunning old scripts.
 This read-only query checks whether the expected deletion RPC is present:
@@ -191,6 +195,21 @@ automatic no-show cancellation are not part of this release.
 
 ## Tests and acceptance
 
+### Room-status kiosk integration
+
+The display-only kiosk builds on Marie's room-availability work, integrated
+against current main without reverting the newer admin/user pages.
+See [KIOSK_SETUP.md](docs/KIOSK_SETUP.md) for the new migration 006, Mac testing,
+iPad handoff and limits. Existing installations of 005 must NOT rerun it.
+This update adds 006; it does not change 005 or install server hosting.
+For a fresh database, apply schema.sql followed by migrations 001 through 006.
+
+Green means no active reservation; BOOKED NOW means a scheduled reservation,
+not verified occupancy. RFID/card check-in is not implemented.
+The kiosk is signed-in and read-only, hides archived rooms/parents, exposes
+no reservation identities, refreshes without overlapping polls and fails closed
+when offline, stale or invalid. Physical iPad testing is still required.
+
 The merged PR #19 passed GitHub Actions, frontend lint/build, 86 Python tests
 (one live test skipped), and 29 embedded database checks. Those earlier CI checks
 did not cover migration 005. This follow-up adds the missing deletion API tests
@@ -198,10 +217,17 @@ and makes the existing database test command install and exercise 005 in a fresh
 disposable local database. The existing GitHub Actions workflow discovers the
 new Python tests and runs the updated database harness without extra CI settings.
 
-Local verification of this follow-up on November 20: 129 Python tests passed,
+Local verification of the deletion-test follow-up on November 20: 129 Python tests passed,
 one live race test was skipped, and 54 embedded database checks plus the three
 legacy rollback SQL scripts passed. These are local results, not a claim that
 this follow-up has already been pushed or passed remote CI.
+
+Local kiosk integration checks on November 21: 164 Python tests passed (one live
+test skipped), 76 embedded SQL checks passed, and 22 frontend schedule-model
+tests passed. Additional isolated React interaction checks covered refresh,
+cancellation, offline/recovery, stale responses, invalid data and cleanup.
+Frontend lint/build passed with the existing chunk-size warning. Actual browser,
+physical-iPad, live Supabase and network checks are not claimed as passed.
 
 Default tests do not write to live Supabase. API tests mock authentication/RPC
 responses, while embedded SQL tests verify university permissions, archived-only
@@ -215,6 +241,7 @@ large-JavaScript-chunk warning. Never count a skipped/live-unrun test as passing
 
 ```bash
 npm --prefix frontend run lint
+npm --prefix frontend run test:kiosk
 npm --prefix frontend run build
 cd backend
 .venv/bin/python -m pytest -q
@@ -224,7 +251,7 @@ npm test
 ```
 
 Database tests create a disposable embedded PostgreSQL instance with synthetic
-Auth identities, schema and migrations 001 through 005. They test real SQL
+Auth identities, schema and migrations 001 through 006. They test real SQL
 policies/triggers/functions but NOT live Supabase Auth, PostgREST or multi-connection
 races. No live credentials are needed. The three legacy SQL scripts roll back
 their fixtures; the rest of the harness uses its own disposable database.
@@ -272,11 +299,13 @@ Manual release checklist:
 ## Main pages and new management API
 
 Pages: /login, /register, /dashboard, /resources, /resources/:resourceId/slots,
+/resources/:resourceId/kiosk,
 /bookings and /admin. Admin sections: locations, resources, slots, reservations,
 checks (for example /admin?section=reservations).
 
 | Method / route | Purpose |
 | --- | --- |
+| GET /api/resources/:id/status | Active signed-in room-status display; requires migration 006 |
 | GET /api/admin/organization | Trusted current university |
 | GET/POST /api/admin/locations | Scoped directory/create |
 | PATCH /api/admin/locations/:id | Name/address only |
