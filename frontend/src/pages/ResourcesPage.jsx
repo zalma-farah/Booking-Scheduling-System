@@ -212,6 +212,9 @@ function ResourcesPage() {
                                         View time slots
                                     </Link>
                                 </Button>
+                                <Button className="ml-3 mt-6" variant="outline" asChild>
+                                    <Link to={`/resources/${encodeURIComponent(resource.id)}/kiosk`}>Room availability</Link>
+                                </Button>
                             </article>
                         ))}
                     </section>

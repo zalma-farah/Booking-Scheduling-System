@@ -9,7 +9,7 @@ CREATE TABLE auth.users(id uuid PRIMARY KEY,email text,raw_user_meta_data jsonb)
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 GRANT USAGE ON SCHEMA auth, public TO authenticated;
 GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;`);
-for(const file of ['database/schema.sql','database/migrations/001_resource_availability.sql','database/migrations/002_booking_rules.sql','database/migrations/003_organization_access.sql','database/migrations/004_managed_operations.sql','database/migrations/005_safe_inventory_deletion.sql']){
+for(const file of ['database/schema.sql','database/migrations/001_resource_availability.sql','database/migrations/002_booking_rules.sql','database/migrations/003_organization_access.sql','database/migrations/004_managed_operations.sql','database/migrations/005_safe_inventory_deletion.sql','database/migrations/006_room_kiosk_status.sql']){
   await db.exec(fs.readFileSync(base+'/'+file,'utf8'));console.log('APPLIED '+file);
 }
 await db.exec(`INSERT INTO auth.users(id,email) VALUES
@@ -136,5 +136,69 @@ await db.exec("UPDATE public.organization_admins SET is_active=true WHERE user_i
 for(const file of ['inactive_account.sql','booking_times.sql','booking_ownership.sql']) {
   await db.exec(fs.readFileSync(base+'/database/tests/'+file,'utf8'));console.log('PASS legacy '+file);
 }
+// Kiosk read tests. All fixtures live in this disposable in-memory database.
+await db.exec(`INSERT INTO public.resources(id,location_id,name,is_active) VALUES
+(40,11,'Kiosk study room',true),(41,12,'Kiosk empty room',true),
+(42,11,'Archived kiosk room',false),(43,13,'Room under archived location',true);
+WITH bounds AS (SELECT * FROM public.kiosk_day_bounds(clock_timestamp()))
+INSERT INTO public.time_slots(id,resource_id,start_time,end_time,is_active)
+SELECT v.id,v.room,v.start_time,v.end_time,v.active
+FROM bounds b CROSS JOIN LATERAL (VALUES
+(61,40,b.day_start-interval '1 hour',b.day_start+interval '1 hour',true),
+(62,40,b.day_start+interval '1 hour',b.day_end-interval '1 hour',true),
+(63,40,b.day_end-interval '1 hour',b.day_end+interval '1 hour',true),
+(64,40,b.day_start-interval '3 hours',b.day_start-interval '2 hours',true),
+(65,40,b.day_end+interval '2 hours',b.day_end+interval '3 hours',true),
+(66,41,b.day_start+interval '2 hours',b.day_start+interval '3 hours',false)
+) AS v(id,room,start_time,end_time,active);`);
+// Historical bookings stand in for reservations created before their start.
+// Disable ONLY the future-booking guard while the test owner seeds them.
+// This transaction is local test-fixture setup, NEVER a live setup instruction.
+await db.transaction(async tx => {
+  await tx.exec(`ALTER TABLE public.bookings DISABLE TRIGGER guard_new_booking;
+    INSERT INTO public.bookings(user_id,time_slot_id,status,cancelled_at) VALUES
+    ('00000000-0000-0000-0000-000000000003',61,'active',NULL),
+    ('00000000-0000-0000-0000-000000000003',62,'active',NULL),
+    ('00000000-0000-0000-0000-000000000003',63,'cancelled',clock_timestamp());
+    ALTER TABLE public.bookings ENABLE TRIGGER guard_new_booking;`);
+});
+await denied(3,'INSERT INTO public.bookings(user_id,time_slot_id) VALUES(auth.uid(),61)','booking time guard restored after historical fixture','23514');
+const kiosk = (await asUser(5,'SELECT public.get_room_kiosk_status(40) AS result')).rows[0].result;
+ok(kiosk.resource.id===40&&kiosk.resource.location.id===11,'kiosk reads active room and location');
+ok(kiosk.timezone==='America/Los_Angeles','kiosk timezone is explicit');
+ok(kiosk.slots.map(s=>s.id).join(',')==='61,62,63','kiosk includes overnight slots and excludes other days');
+ok(kiosk.slots[0].is_booked===true&&kiosk.slots[1].is_booked===true,'kiosk sees reserved status across users');
+ok(kiosk.slots[2].is_booked===false,'cancelled bookings do not mark a slot booked');
+ok((await asUser(5,'SELECT id FROM public.bookings WHERE time_slot_id IN (61,62,63)')).rows.length===0,'kiosk caller still cannot read other user reservations');
+ok(kiosk.slots.every(s=>Object.keys(s).sort().join(',')==='end_time,id,is_booked,start_time'),'kiosk slot fields have no user or booking identifiers');
+ok(Object.keys(kiosk.resource).sort().join(',')==='id,location,name','kiosk resource fields contain no account data');
+const emptyKiosk=(await asUser(3,'SELECT public.get_room_kiosk_status(41) AS result')).rows[0].result;
+ok(emptyKiosk.slots.length===0,'inactive slots are absent; empty active room is valid');
+await denied(3,'SELECT public.get_room_kiosk_status(42)','archived room not displayed','P0002');
+await denied(1,'SELECT public.get_room_kiosk_status(42)','admin cannot display archived room as available','P0002');
+await denied(3,'SELECT public.get_room_kiosk_status(43)','archived parent room not displayed','P0002');
+await denied(3,'SELECT public.get_room_kiosk_status(99999)','missing room not displayed','P0002');
+await denied(3,'SELECT public.get_room_kiosk_status(0)','invalid kiosk room denied','22023');
+await denied(3,'SELECT * FROM public.kiosk_day_bounds(clock_timestamp())','authenticated caller cannot use private clock helper');
+await db.exec("UPDATE public.profiles SET is_active=false WHERE id='00000000-0000-0000-0000-000000000005'");
+await denied(5,'SELECT public.get_room_kiosk_status(40)','inactive account cannot read kiosk');
+await db.exec("UPDATE public.profiles SET is_active=true WHERE id='00000000-0000-0000-0000-000000000005'");
+for(const [observed,hours] of [['2026-03-08T19:00:00Z',23],['2026-11-01T19:00:00Z',25]]) {
+  const duration=(await db.query(`SELECT extract(epoch FROM (day_end-day_start))/3600 AS hours FROM public.kiosk_day_bounds('${observed}'::timestamptz)`)).rows[0].hours;
+  ok(Number(duration)===hours,'San Diego daylight-saving day has '+hours+' hours');
+}
+for(const [observed,first,last] of [
+  ['2026-03-08T19:00:00Z','2026-03-08T08:00:00Z','2026-03-09T07:00:00Z'],
+  ['2026-11-01T19:00:00Z','2026-11-01T07:00:00Z','2026-11-02T08:00:00Z'],
+]) {
+  const correct=(await db.query(`SELECT day_start='${first}'::timestamptz AND day_end='${last}'::timestamptz AS correct FROM public.kiosk_day_bounds('${observed}'::timestamptz)`)).rows[0].correct;
+  ok(correct,'San Diego midnight UTC boundaries match '+observed.slice(0,10));
+}
+await db.transaction(async tx => {
+  await tx.exec('SET LOCAL ROLE anon');
+  try { await tx.query('SELECT public.get_room_kiosk_status(40)'); throw new Error('anonymous kiosk read not denied'); }
+  catch(error) { if(error.code!=='42501') throw error; }
+});
+ok(true,'anonymous caller cannot execute kiosk RPC');
 console.log(`${passed} database checks passed (embedded PostgreSQL, not live Supabase; concurrency not measured)`);
 await db.close();
