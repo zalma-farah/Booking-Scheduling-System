@@ -145,14 +145,22 @@ function ResourcesPage() {
                                         {resource.location.address}
                                     </p>
                                 )}
-                                <Button
-                                    className="mt-6 bg-[#4f654d] text-white hover:bg-[#3f523e]"
-                                    asChild
-                                >
-                                    <Link to={`/resources/${resource.id}/slots`}>
-                                        View time slots
-                                    </Link>
-                                </Button>
+                                <div className="mt-6 flex flex-wrap gap-3">
+                                    <Button
+                                        className="bg-[#4f654d] text-white hover:bg-[#3f523e]"
+                                        asChild
+                                    >
+                                        <Link to={`/resources/${resource.id}/slots`}>
+                                            View time slots
+                                        </Link>
+                                    </Button>
+
+                                    <Button variant="outline" asChild>
+                                        <Link to={`/resources/${resource.id}/kiosk`}>
+                                            Room availability
+                                        </Link>
+                                    </Button>
+                                </div>
                             </article>
                         ))}
                     </section>

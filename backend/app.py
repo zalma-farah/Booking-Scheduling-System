@@ -1334,7 +1334,90 @@ def create_admin_time_slot():
             502,
         )
 
+@app.get("/api/resources/<int:resource_id>/status")
+@require_auth()
+def get_resource_status(resource_id):
+    """Is this room in use right now? Also returns today's slots (San Diego time)."""
 
+    if resource_id < 1 or resource_id > 9223372036854775807:
+        return api_error("Invalid resource ID.", 400)
+
+    try:
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/get_resource_today_status",
+            headers=g.supabase_headers,
+            json={"p_resource_id": resource_id},
+            timeout=10.0,
+        )
+
+        if response.status_code == 401:
+            return api_error("Your session expired. Please sign in again.", 401)
+
+        if response.status_code == 403:
+            return api_error("Access to room status was denied.", 403)
+
+        if response.status_code == 404:
+            return api_error(
+                "Room status is not set up in Supabase yet. "
+                "Run the get_resource_today_status SQL first.",
+                500,
+            )
+
+        response.raise_for_status()
+        rows = response.json()
+
+        if not isinstance(rows, list):
+            return api_error("Invalid room status response.", 502)
+
+        now = datetime.now(timezone.utc)
+        slots = []
+        current_slot = None
+        next_booked_slot = None
+
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or type(row.get("slot_id")) is not int
+                or type(row.get("is_booked")) is not bool
+            ):
+                return api_error("Invalid room status response.", 502)
+
+            start = _parse_slot_timestamp(row.get("start_time"))
+            end = _parse_slot_timestamp(row.get("end_time"))
+
+            slot = {
+                "id": row["slot_id"],
+                "start_time": row["start_time"],
+                "end_time": row["end_time"],
+                "is_booked": row["is_booked"],
+                "is_now": start <= now < end,
+            }
+            slots.append(slot)
+
+            if slot["is_now"] and slot["is_booked"]:
+                current_slot = slot
+
+            if start > now and slot["is_booked"] and next_booked_slot is None:
+                next_booked_slot = slot
+
+        result = jsonify(
+            {
+                "status": "ok",
+                "state": "in_use" if current_slot else "available",
+                "current_slot": current_slot,
+                "next_booked_slot": next_booked_slot,
+                "slots": slots,
+                "checked_at": now.isoformat(),
+            }
+        )
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
+    except httpx.TimeoutException:
+        return api_error("Loading room status timed out. Please try again.", 503)
+
+    except (httpx.HTTPError, ValueError):
+        return api_error("Unable to load room status. Please try again.", 502)
 if __name__ == "__main__":
     # Local development only.
     app.run(debug=True, port=5000)

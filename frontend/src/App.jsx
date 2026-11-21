@@ -6,6 +6,7 @@ import LoginPage from '@/pages/LoginPage'
 import BookingsPage from '@/pages/BookingsPage'
 import RegisterPage from '@/pages/RegisterPage'
 import ResourcesPage from '@/pages/ResourcesPage'
+import RoomKioskPage from '@/pages/RoomKioskPage'
 import TimeSlotsPage from '@/pages/TimeSlotsPage'
 
 function App() {
@@ -67,6 +68,15 @@ function App() {
         element={
           <ProtectedRoute>
             <TimeSlotsPage />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/resources/:resourceId/kiosk"
+        element={
+          <ProtectedRoute>
+            <RoomKioskPage />
           </ProtectedRoute>
         }
       />
