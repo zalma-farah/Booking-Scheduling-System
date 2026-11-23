@@ -19,6 +19,35 @@ export async function apiRequest(path, { method = 'GET', body } = {}) {
 
   const headers = { Authorization: `Bearer ${token}` }
 
+  return requestJson(path, { method, body, headers })
+}
+
+// Explicit public endpoints: limited status reads and bounded guest reservations.
+export async function publicKioskRequest(resourceId) {
+  if (!/^[1-9]\d*$/.test(String(resourceId)) || !Number.isSafeInteger(Number(resourceId))) {
+    throw new Error('Invalid room ID.')
+  }
+  return requestJson(`/api/public/rooms/${resourceId}/status`, {
+    method: 'GET', headers: {},
+  })
+}
+
+export async function walkInRequest(resourceId, body) {
+  if (!/^[1-9]\d*$/.test(String(resourceId)) || !Number.isSafeInteger(Number(resourceId))) {
+    throw new Error('Invalid room ID.')
+  }
+  return requestJson(`/api/public/rooms/${resourceId}/walk-in`, {
+    method: body === undefined ? 'GET' : 'POST', headers: {}, body,
+  })
+}
+
+export async function publicRoomList(after = 0) {
+  if (!Number.isSafeInteger(after) || after < 0) throw new Error('Invalid room cursor.')
+  return requestJson(`/api/public/walk-in/rooms?after=${after}`, { method: 'GET', headers: {} })
+}
+
+async function requestJson(path, { method, body, headers }) {
+
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
   }
@@ -29,6 +58,8 @@ export async function apiRequest(path, { method = 'GET', body } = {}) {
     response = await fetch(`${API_URL}${path}`, {
       method,
       headers,
+      credentials: 'omit',
+      cache: 'no-store',
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(35000),
     })

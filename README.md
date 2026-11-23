@@ -39,7 +39,8 @@ Implemented features:
 - Active/Archived inventory filters and typed confirmation for permanent deletion
   of empty archived rooms or locations, restricted to the admin's university.
 - Matching personal dashboard, resource browsing and My bookings navigation/styles.
-- Display-only signed-in room kiosk with a read-only status API (migration 006).
+- Public read-only room kiosk and phone-booking QR code (migration 007).
+- Guest same-screen walk-in booking, public room directory and scoped admin cancellation (migration 008).
 - University reservation listing and cancellation, separate from personal My bookings.
 - Repeatable Python unit tests, embedded database checks and Playwright scenarios.
 
@@ -120,7 +121,7 @@ Administrators without an explicit assignment will lose management access by des
 Every existing location is assigned to SDSU, as confirmed by the project owner.
 Running the setup/migration scripts does not delete inventory or booking history.
 
-For a NEW database, apply `database/schema.sql`, then migrations 001 through 006
+For a NEW database, apply `database/schema.sql`, then migrations 001 through 008
 in numerical order in the Supabase SQL Editor as the trusted database owner.
 For an existing database, do NOT rerun `schema.sql` or successful migrations.
 Apply only missing upgrades, in order, during a coordinated pause in app writes:
@@ -129,11 +130,13 @@ Apply only missing upgrades, in order, during a coordinated pause in app writes:
 2. `database/migrations/004_managed_operations.sql`
 3. `database/migrations/005_safe_inventory_deletion.sql`
 4. `database/migrations/006_room_kiosk_status.sql`
-5. Edit the placeholders in `database/setup/assign_organization_admin.sql` and
+5. `database/migrations/007_public_room_kiosk.sql`
+6. `database/migrations/008_guest_walk_in.sql`
+7. Edit the placeholders in `database/setup/assign_organization_admin.sql` and
    run it as the trusted database owner for each existing administrator.
 
-If the current database already has 003/004, install missing upgrades 005 and 006
-in that order. If 005 already succeeded, skip it and install only 006. An "already
+If 007 already succeeded, install ONLY 008. Otherwise install missing upgrades
+in numerical order. Never rerun successful migrations. An "already
 exists" error on a repeated `CREATE FUNCTION` does not mean you should drop the
 function or reset the schema. Stop and verify rather than rerunning old scripts.
 This read-only query checks whether the expected deletion RPC is present:
@@ -197,18 +200,32 @@ automatic no-show cancellation are not part of this release.
 
 ### Room-status kiosk integration
 
+Guest same-screen walk-in booking is described in [WALK_IN_SETUP.md](docs/WALK_IN_SETUP.md).
+The sign-in page links to /walk-in; each room kiosk offers immediate guest
+reservations only inside active admin-created availability, capped at two hours,
+the next reservation and midnight. Guests cannot cancel. Scoped administrators
+see Walk-in reservation rows and can cancel while retaining history. No fake
+accounts are used. This deliberately anonymous demo mode cannot verify physical
+presence or prevent remote misuse; see the guide before any public deployment.
+
 The display-only kiosk builds on Marie's room-availability work, integrated
 against current main without reverting the newer admin/user pages.
-See [KIOSK_SETUP.md](docs/KIOSK_SETUP.md) for the new migration 006, Mac testing,
-iPad handoff and limits. Existing installations of 005 must NOT rerun it.
-This update adds 006; it does not change 005 or install server hosting.
-For a fresh database, apply schema.sql followed by migrations 001 through 006.
+See [KIOSK_SETUP.md](docs/KIOSK_SETUP.md) for migration 007, public viewing,
+phone-booking QR configuration, iPad handoff and limits. Install only missing
+migrations in order; if 007 succeeded, install only 008. This does not install hosting.
+For a fresh database, apply schema.sql followed by migrations 001 through 008.
 
 Green means no active reservation; BOOKED NOW means a scheduled reservation,
 not verified occupancy. RFID/card check-in is not implemented.
-The kiosk is signed-in and read-only, hides archived rooms/parents, exposes
-no reservation identities, refreshes without overlapping polls and fails closed
-when offline, stale or invalid. Physical iPad testing is still required.
+The kiosk no longer requires personal sign-in. A separate public RPC exposes
+only active room/location names, today's active slot times/IDs and booked booleans.
+This information is deliberately public by room ID, not private behind a secret URL.
+No reservation identities or direct table access are exposed. The original 006
+RPC remains authenticated; account booking and management routes stay protected.
+The QR code is generated locally and sends visitors to that room's booking page
+on their own phone. Login/registration preserve the room destination. Migration
+008 separately adds same-screen guest booking. It fails closed when offline, stale or invalid.
+Physical iPad/phone scanning and hosting still require live testing.
 
 The merged PR #19 passed GitHub Actions, frontend lint/build, 86 Python tests
 (one live test skipped), and 29 embedded database checks. Those earlier CI checks
@@ -228,6 +245,18 @@ tests passed. Additional isolated React interaction checks covered refresh,
 cancellation, offline/recovery, stale responses, invalid data and cleanup.
 Frontend lint/build passed with the existing chunk-size warning. Actual browser,
 physical-iPad, live Supabase and network checks are not claimed as passed.
+
+Local public-kiosk follow-up on November 22: 178 Python tests passed (one live
+test skipped), 99 embedded SQL checks passed, and 46 frontend model/link/QR tests
+passed. Lint/build and isolated real-component/API-client checks passed. Production
+dependency audit found no reported vulnerabilities. These are local checks, not
+remote CI, a physical QR scan, live Supabase migration verification or iPad testing.
+
+Local guest walk-in follow-up: 215 Python tests passed (one live test skipped),
+137 embedded SQL checks passed, and 63 frontend model/link/confirmation tests
+passed. Lint, a production build with synthetic environment values and isolated
+real-React guest form checks passed. Browser scenarios were discovered, not run;
+no live Supabase, physical iPad or multi-connection race pass is claimed.
 
 Default tests do not write to live Supabase. API tests mock authentication/RPC
 responses, while embedded SQL tests verify university permissions, archived-only
@@ -251,7 +280,7 @@ npm test
 ```
 
 Database tests create a disposable embedded PostgreSQL instance with synthetic
-Auth identities, schema and migrations 001 through 006. They test real SQL
+Auth identities, schema and migrations 001 through 008. They test real SQL
 policies/triggers/functions but NOT live Supabase Auth, PostgREST or multi-connection
 races. No live credentials are needed. The three legacy SQL scripts roll back
 their fixtures; the rest of the harness uses its own disposable database.
@@ -298,7 +327,7 @@ Manual release checklist:
 
 ## Main pages and new management API
 
-Pages: /login, /register, /dashboard, /resources, /resources/:resourceId/slots,
+Pages: /login, /register, /walk-in, /dashboard, /resources, /resources/:resourceId/slots,
 /resources/:resourceId/kiosk,
 /bookings and /admin. Admin sections: locations, resources, slots, reservations,
 checks (for example /admin?section=reservations).
@@ -306,6 +335,12 @@ checks (for example /admin?section=reservations).
 | Method / route | Purpose |
 | --- | --- |
 | GET /api/resources/:id/status | Active signed-in room-status display; requires migration 006 |
+| GET /api/public/rooms/:id/status | No sign-in; limited read-only room schedule; requires migration 007 |
+| GET /api/public/walk-in/rooms | Public active room directory; cursor pagination; requires 008 |
+| GET /api/public/rooms/:id/walk-in | Verified current guest reservation window |
+| POST /api/public/rooms/:id/walk-in | Idempotent bounded guest booking; end_time + request_id only |
+| GET /api/admin/walk-ins | Assigned university guest reservations |
+| POST /api/admin/walk-ins/:id/cancel | Scoped administrator guest cancellation |
 | GET /api/admin/organization | Trusted current university |
 | GET/POST /api/admin/locations | Scoped directory/create |
 | PATCH /api/admin/locations/:id | Name/address only |

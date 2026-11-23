@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CalendarDays, LoaderCircle } from 'lucide-react'
-import { Link, Navigate } from 'react-router'
+import { Link, Navigate, useLocation } from 'react-router'
+import { safeBookingReturn } from '@/lib/booking-link'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -10,6 +11,10 @@ import { Label } from '@/components/ui/label'
 
 function LoginPage() {
   const { user, loading: authLoading, isAdmin } = useAuth()
+  const location = useLocation()
+  const returnTo = safeBookingReturn(new URLSearchParams(location.search).get('next')) ||
+    safeBookingReturn(location.state?.from)
+  const registerUrl = returnTo ? `/register?next=${encodeURIComponent(returnTo)}` : '/register'
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -53,7 +58,7 @@ function LoginPage() {
   if (user) {
     return (
       <Navigate
-        to={isAdmin ? '/admin' : '/dashboard'}
+        to={returnTo || (isAdmin ? '/admin' : '/dashboard')}
         replace
       />
     )
@@ -180,11 +185,12 @@ function LoginPage() {
               </Button>
             </form>
 
+            <p className="mt-6 text-center"><Link to="/walk-in" className="font-semibold text-[#41664c] underline">Walk-in room booking — no account needed</Link></p>
             <p className="mt-6 text-center text-sm text-muted-foreground">
               New to the system?{' '}
               <Link
                 className="font-semibold text-violet-700 hover:underline"
-                to="/register"
+                to={registerUrl}
               >
                 Create an account
               </Link>

@@ -8,6 +8,7 @@ import RegisterPage from '@/pages/RegisterPage'
 import ResourcesPage from '@/pages/ResourcesPage'
 import RoomKioskPage from '@/pages/RoomKioskPage'
 import TimeSlotsPage from '@/pages/TimeSlotsPage'
+import WalkInRoomsPage from '@/pages/WalkInRoomsPage'
 
 function App() {
   return (
@@ -72,7 +73,8 @@ function App() {
         }
       />
 
-      <Route path="/resources/:resourceId/kiosk" element={<ProtectedRoute><RoomKioskPage /></ProtectedRoute>} />
+      <Route path="/resources/:resourceId/kiosk" element={<RoomKioskPage />} />
+      <Route path="/walk-in" element={<WalkInRoomsPage />} />
 
       <Route
         path="*"
