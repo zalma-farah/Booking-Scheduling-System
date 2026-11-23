@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from uuid import UUID
 
 import httpx
 from dotenv import load_dotenv
@@ -1853,6 +1854,14 @@ def list_admin_time_slots():
         ):
             return api_error("Invalid administrator time-slot response.", 502)
 
+        blocked = []
+        if slots:
+            try:
+                blocked = _walk_in_rpc('managed_guest_blocked_slots', {'p_slot_ids': [s['id'] for s in slots]}, True)
+            except _WalkInFailure as error:
+                return api_error(error.message, error.status)
+            if not isinstance(blocked, list) or any(type(i) is not int or i not in [s['id'] for s in slots] for i in blocked):
+                return api_error('Invalid guest slot availability.', 502)
         for slot in slots:
             bookings = slot.pop("bookings", None)
 
@@ -1872,6 +1881,7 @@ def list_admin_time_slots():
                 and location is not None
                 and location["is_active"] is True
                 and not any(booking["status"] == "active" for booking in bookings)
+                and slot['id'] not in blocked
             )
 
         result = jsonify({"status": "ok", "slots": slots})
@@ -2234,6 +2244,217 @@ def get_resource_status(resource_id):
         return failure("Loading room status timed out. Please retry.", 503)
     except (httpx.HTTPError, ValueError, OverflowError):
         return failure("Room status could not be verified. Please retry.", 502)
+
+
+@app.get("/api/public/rooms/<int:resource_id>/status")
+def get_public_resource_status(resource_id):
+    """No personal session. Only the explicit public, read-only RPC is used."""
+    def failure(message, status):
+        result, code = api_error(message, status)
+        result.headers["Cache-Control"] = "no-store"
+        return result, code
+
+    if resource_id < 1 or resource_id > 9007199254740991:
+        return failure("Invalid resource ID.", 400)
+    if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY:
+        return failure("Room status is not configured.", 503)
+    try:
+        # Never forward visitor credentials, use a service-role key, or query
+        # bookings directly. Supabase executes this RPC with the anon role.
+        response = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/get_public_room_kiosk_status",
+            headers={"apikey": SUPABASE_PUBLISHABLE_KEY},
+            json={"p_resource_id": resource_id}, timeout=10.0,
+        )
+        if missing_rpc(response):
+            return failure("Public kiosk status is not installed. Apply migration 007 once after 006.", 503)
+        if response.status_code >= 400:
+            try:
+                problem = response.json()
+            except ValueError:
+                problem = {}
+            if isinstance(problem, dict) and problem.get("code") == "P0002":
+                return failure("Room unavailable or not found.", 404)
+        response.raise_for_status()
+        result = jsonify(_validate_kiosk_snapshot(response.json(), resource_id))
+        result.headers["Cache-Control"] = "no-store"
+        return result
+    except httpx.TimeoutException:
+        return failure("Loading room status timed out. Please retry.", 503)
+    except (httpx.HTTPError, ValueError, OverflowError):
+        return failure("Room status could not be verified. Please retry.", 502)
+
+
+def _walk_in_rpc(name, payload, authenticated=False):
+    """Fixed callers only; never forward a guest's credentials or use service keys."""
+    if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY:
+        raise _WalkInFailure("Walk-in booking is not configured.", 503)
+    try:
+        response = httpx.post(f"{SUPABASE_URL}/rest/v1/rpc/{name}",
+            headers=g.supabase_headers if authenticated else {"apikey": SUPABASE_PUBLISHABLE_KEY},
+            json=payload, timeout=10.0)
+        if response.status_code >= 400:
+            try:
+                value = response.json()
+            except ValueError:
+                value = {}
+            code = value.get('code') if isinstance(value, dict) else None
+            if code == 'PGRST202':
+                raise _WalkInFailure("Walk-in booking needs migration 008 after 007.", 503)
+            if code == 'P0002':
+                raise _WalkInFailure("Room unavailable or not found.", 404)
+            if code in ('23514', '23505', '23P01'):
+                raise _WalkInFailure("Availability changed. Refresh before reserving.", 409)
+            if code in ('22023', '22P02'):
+                raise _WalkInFailure("Invalid reservation request.", 400)
+            if authenticated and response.status_code in (401, 403):
+                raise _WalkInFailure("Administrator access denied.", response.status_code)
+        response.raise_for_status()
+        return response.json()
+    except httpx.TimeoutException as error:
+        raise _WalkInFailure("Confirmation timed out. Check using the same request before trying a new reservation.", 503) from error
+    except (httpx.HTTPError, ValueError) as error:
+        raise _WalkInFailure("Unable to verify walk-in booking. Refresh or check confirmation.", 502) from error
+
+
+class _WalkInFailure(Exception):
+    def __init__(self, message, status):
+        self.message, self.status = message, status
+
+
+def _walk_in_result(callback):
+    try:
+        result = jsonify(callback())
+        result.headers['Cache-Control'] = 'no-store'
+        return result
+    except _WalkInFailure as error:
+        result, status = api_error(error.message, error.status)
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        result, status = api_error('The server returned an invalid walk-in response.', 502)
+    result.headers['Cache-Control'] = 'no-store'
+    return result, status
+
+
+def _walk_in_room_id(value):
+    if type(value) is not int or not 1 <= value <= 9007199254740991:
+        raise _WalkInFailure('Invalid room ID.', 400)
+
+
+@app.get('/api/public/walk-in/rooms')
+def public_walk_in_rooms():
+    def run():
+        if set(request.args) - {'after'}:
+            raise _WalkInFailure('Only the after cursor is supported.', 400)
+        raw = request.args.get('after', '0')
+        if not raw.isascii() or not raw.isdigit() or len(raw) > 16 or int(raw) > 9007199254740991:
+            raise _WalkInFailure('Invalid room cursor.', 400)
+        after = int(raw)
+        data = _walk_in_rpc('list_walk_in_rooms', {'p_after': after})
+        rooms = data['rooms']
+        if not isinstance(rooms, list) or len(rooms) > 50:
+            raise ValueError()
+        safe = []
+        previous = after
+        for room in rooms:
+            _walk_in_room_id(room['id'])
+            if room['id'] <= previous or not isinstance(room['name'], str) or not room['name'].strip():
+                raise ValueError()
+            _walk_in_room_id(room['location']['id'])
+            if not isinstance(room['location']['name'], str) or not room['location']['name'].strip():
+                raise ValueError()
+            safe.append({'id': room['id'], 'name': room['name'],
+                'location': {'id': room['location']['id'], 'name': room['location']['name']}})
+            previous = room['id']
+        cursor = data.get('next_after')
+        if cursor is not None and (type(cursor) is not int or not safe or cursor != safe[-1]['id']):
+            raise ValueError()
+        return {'status': 'ok', 'rooms': safe, 'next_after': cursor}
+    return _walk_in_result(run)
+
+
+@app.get('/api/public/rooms/<int:resource_id>/walk-in')
+def public_walk_in_window(resource_id):
+    def run():
+        _walk_in_room_id(resource_id)
+        data = _walk_in_rpc('get_walk_in_window', {'p_resource_id': resource_id})
+        checked = _parse_slot_timestamp(data['checked_at'])
+        end = _parse_slot_timestamp(data['available_until']) if data['available_until'] is not None else None
+        if type(data['resource_id']) is not int or data['resource_id'] != resource_id or data['max_minutes'] != 120:
+            raise ValueError()
+        if end is not None and not checked + timedelta(minutes=5) <= end <= checked + timedelta(hours=2):
+            raise ValueError()
+        return {'status': 'ok', 'resource_id': resource_id, 'checked_at': checked.isoformat(),
+            'available_until': end.isoformat() if end else None, 'max_minutes': 120}
+    return _walk_in_result(run)
+
+
+@app.post('/api/public/rooms/<int:resource_id>/walk-in')
+def public_create_walk_in(resource_id):
+    def run():
+        _walk_in_room_id(resource_id)
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {'end_time', 'request_id'}:
+            raise _WalkInFailure('Send only end_time and request_id.', 400)
+        try:
+            request_id = str(UUID(payload['request_id'], version=4))
+            if request_id != payload['request_id'] or UUID(request_id).version != 4:
+                raise ValueError()
+            end = _parse_slot_timestamp(payload['end_time'])
+        except (ValueError, TypeError, AttributeError):
+            raise _WalkInFailure('Invalid end time or confirmation identifier.', 400)
+        data = _walk_in_rpc('create_guest_walk_in', {'p_resource_id': resource_id,
+            'p_end_time': end.isoformat(), 'p_request_id': request_id})
+        start = _parse_slot_timestamp(data['start_time'])
+        actual_end = _parse_slot_timestamp(data['end_time'])
+        if (type(data['resource_id']) is not int or data['resource_id'] != resource_id or
+            data['request_id'] != request_id or actual_end != end or
+            data['status'] not in ('active', 'cancelled') or not start < end <= start + timedelta(hours=2)):
+            raise ValueError()
+        return {'status': 'ok', 'reservation': {'resource_id': resource_id, 'start_time': start.isoformat(),
+            'end_time': end.isoformat(), 'status': data['status'], 'request_id': request_id}}
+    return _walk_in_result(run)
+
+
+@app.get('/api/admin/walk-ins')
+@require_auth(admin_only=True)
+def admin_walk_in_list():
+    def run():
+        status = request.args.get('status', 'all')
+        if status not in ('all', 'active', 'cancelled') or set(request.args) - {'status'}:
+            raise _WalkInFailure('Invalid status filter.', 400)
+        data = _walk_in_rpc('list_managed_walk_ins', {'p_status': status}, True)
+        if not isinstance(data, list) or len(data) > 100:
+            raise ValueError()
+        rows = []
+        for row in data:
+            _walk_in_room_id(row['id'])
+            if row['kind'] != 'walk_in' or row['status'] not in ('active', 'cancelled'):
+                raise ValueError()
+            slot = row['slot']
+            if _parse_slot_timestamp(slot['end_time']) <= _parse_slot_timestamp(slot['start_time']):
+                raise ValueError()
+            _walk_in_room_id(slot['resource']['id'])
+            if not isinstance(slot['resource']['name'], str) or not isinstance(slot['resource']['location']['name'], str):
+                raise ValueError()
+            rows.append({'id': row['id'], 'kind': 'walk_in', 'status': row['status'],
+                'created_at': _parse_slot_timestamp(row['created_at']).isoformat(),
+                'slot': {'start_time': slot['start_time'], 'end_time': slot['end_time'],
+                    'resource': {'id': slot['resource']['id'], 'name': slot['resource']['name'],
+                        'location': {'name': slot['resource']['location']['name']}}}})
+        return {'status': 'ok', 'bookings': rows}
+    return _walk_in_result(run)
+
+
+@app.post('/api/admin/walk-ins/<int:booking_id>/cancel')
+@require_auth(admin_only=True)
+def admin_walk_in_cancel(booking_id):
+    def run():
+        _walk_in_room_id(booking_id)
+        data = _walk_in_rpc('cancel_managed_walk_in', {'p_booking_id': booking_id}, True)
+        if type(data.get('id')) is not int or data['id'] != booking_id or data.get('status') != 'cancelled':
+            raise ValueError()
+        return {'status': 'ok', 'booking': {'id': booking_id, 'kind': 'walk_in', 'status': 'cancelled'}}
+    return _walk_in_result(run)
 
 
 if __name__ == "__main__":

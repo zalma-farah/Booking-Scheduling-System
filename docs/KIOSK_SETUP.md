@@ -1,152 +1,150 @@
-# Room-status kiosk: Mac first, then iPad
+# Public room kiosk and phone booking
 
-This integrates Marie's display idea from commit 2014fab with current main
-ea631aa. It preserves the newer user/admin pages, university management,
-archives, and safe deletion. Do not merge the older Marie branch wholesale.
+Guest same-screen booking is now added by migration 008. See
+[WALK_IN_SETUP.md](WALK_IN_SETUP.md) for installation, enabled hours, admin cancellation
+and anonymous-booking limitations. The sections below describe the original 007
+public viewing/phone handoff; 008 adds narrowly bounded guest writes separately.
 
-## What this feature does
+Builds on Marie's original kiosk work (2014fab), integrated in PR #21.
+This follow-up is based on main e9f7ce7. Keep the original contribution history.
 
-- Open an active resource's **Room availability** link.
-- Green **AVAILABLE** means no active reservation right now.
-- Red **BOOKED NOW** means a scheduled active reservation overlaps the current
-  server time. It does not prove that a person entered the room.
-- Show today's active slots in San Diego time, including slots crossing midnight.
-- Refresh about ten seconds after the preceding request completes. Requests
-  don't overlap. Data older than 30 seconds is not displayed as available.
-- Use a gray screen for offline/stale/invalid data or unavailable rooms.
-- Refresh when the page returns from background/sleep or the connection returns.
-- Display room/location names and booking booleans, never reservation names,
-  emails, account IDs, or booking IDs.
+## What changes
 
-This is NOT RFID check-in, a door lock, an occupancy sensor, a public anonymous
-display, or the server deployment. An active signed-in test account is required.
-Ordinary accounts can see booking status for active rooms they can already browse;
-admin writes remain restricted to the assigned university.
+- Anyone can open /resources/ROOM_ID/kiosk without a personal account.
+- Green means no reservation NOW; red means BOOKED NOW, not physical occupancy.
+- Today’s schedule uses San Diego time and includes overnight overlaps.
+- Gray means offline, stale, invalid or unavailable. Polls do not overlap.
+- A locally generated QR code opens /resources/ROOM_ID/slots on the visitor’s phone.
+- Visitors sign in on their own phone. Login and registration keep the room destination.
+- Creating/cancelling bookings and admin actions still require active accounts.
+- The shared display does not create bookings, accept personal passwords or scan cards.
+- Only existing future slots can be reserved. This does not add arbitrary-duration
+  walk-in reservations, immediate booking of a slot that already started, or check-in.
 
-## 1. Integrate the files
+## Public information and permissions
 
-Start from an updated clean main on a new branch, for example kiosk-integration.
-Preserve unrelated local changes. This update includes frontend, backend,
-migration, documentation and test files. No new package dependency is needed.
+Migration 007 deliberately publishes active room/location names and IDs, today’s
+active slot times/IDs and whether each slot is booked. Room IDs are not secrets;
+people can request another room ID. Do not use this public feature for rooms whose
+names or schedule must stay confidential. Addresses, descriptions, booking IDs,
+account IDs, names and emails are not returned.
 
-Keep your existing private .env files. Do not replace the project folder,
-run schema.sql again, or reapply migrations 003/004/005.
+The new RPC get_public_room_kiosk_status(bigint) is SECURITY DEFINER with an empty
+search_path, fixed qualified queries and a narrow JSON projection. It performs no
+writes. It grants anonymous EXECUTE on this function only, never table access.
+The existing authenticated 006 RPC and all booking/admin policies remain intact.
+The API uses only the configured Supabase publishable key, not a service-role key,
+and does not forward a visitor’s bearer token. It validates and whitelists output.
+Public callers can also invoke this limited RPC directly through Supabase; CORS
+is not authentication. Internet deployment needs HTTPS and abuse/rate controls
+at the hosting/Supabase edge. This patch does not install those controls or hosting.
 
-## 2. Install ONLY the new SQL function
+## Install on your Mac
 
-You already installed 005. In the target development Supabase project's SQL
-Editor, open a new query and paste the entire contents of:
+1. Preserve unrelated changes and update main. Create a new branch, such as
+   public-kiosk-booking. Apply the follow-up patch only once.
+2. Run npm --prefix frontend ci. The lockfile includes qrcode 1.5.4; no third-party
+   QR image service is contacted. Keep your private environment files.
+3. In the Supabase SQL Editor, as database owner, run ONLY the complete new file
+   database/migrations/007_public_room_kiosk.sql ONCE after successful 006.
+   It does not change inventory or reservations. Do not rerun 003–006 or schema.sql.
+4. If SQL fails, stop and inspect the error. Never drop functions or disable RLS
+   to force an upgrade. Do not execute database test fixtures against live Supabase.
+5. Restart backend and frontend after configuration changes.
 
-`database/migrations/006_room_kiosk_status.sql`
+Read-only installation check:
 
-Run it once as the project/database owner. It installs read-only functions and
-does not delete or change inventory or bookings. It uses the new RPC name
-`get_room_kiosk_status`, not any untracked prototype named
-`get_resource_today_status`. The date-boundary helper cannot be executed by
-browser users. Direct booking-table access is not widened.
+~~~sql
+SELECT to_regprocedure('public.get_public_room_kiosk_status(bigint)')
+       IS NOT NULL AS public_kiosk_installed;
+~~~
 
-If an installation error occurs, stop and share it. Don't drop functions or
-disable RLS to make it work. After a successful installation, don't run 006 again.
-This read-only check confirms the expected signature exists:
+## QR address and network setup
 
-```sql
-SELECT to_regprocedure('public.get_room_kiosk_status(bigint)')
-       IS NOT NULL AS kiosk_installed;
-```
+A phone cannot use localhost or 127.0.0.1 on your Mac. The kiosk intentionally
+suppresses the QR and explains the problem when its address is loopback.
+The status display itself still works locally.
 
-## 3. Test on the Mac
+When the frontend is already opened at a phone-accessible origin, the QR uses that
+origin by default. Alternatively set this in frontend/.env.local, then restart Vite
+(or rebuild the production frontend):
 
-Keep the existing development frontend/backend environment configuration.
-From booking-system, start Flask in one terminal:
+~~~dotenv
+VITE_PUBLIC_BOOKING_URL=http://YOUR_MAC_LAN_IP:5173
+~~~
 
-```bash
+Use the actual reachable FRONTEND origin, including its port, without a path,
+query, fragment or credentials. The example above is a placeholder, not a usable
+address. A real deployment should use an HTTPS origin such as https://booking.example.edu.
+This value is public configuration, not a token. The QR contains only the room URL.
+
+This setting DOES NOT configure hosting. The frontend AND backend API must be
+reachable by the phone/iPad. VITE_API_URL=http://127.0.0.1:5000 is local-only and
+will fail on another device even if the QR opens. Current Flask development
+binding/CORS are local-only too. Do not just expose debug Flask to a public network.
+The same-Mac hosting integration is a separate next step; use only disposable
+accounts during a trusted-LAN HTTP demo. Supabase still needs internet access.
+
+For new-account email confirmation, the Supabase Auth redirect allowlist must
+permit the chosen frontend login URL and its safe next query. Test the confirmation
+email on that exact deployment. Do not use broad wildcard redirects in production.
+
+## Start existing local development servers
+
+From booking-system, one terminal:
+
+~~~bash
 ./backend/.venv/bin/python backend/app.py
-```
+~~~
 
-Start Vite in another:
+Another terminal:
 
-```bash
+~~~bash
 npm --prefix frontend run dev
-```
+~~~
 
-Open Vite's displayed localhost address, sign in, then go to Resource tab.
-For an active resource, select **Room availability**. The URL is:
+Open a known /resources/ROOM_ID/kiosk URL in an incognito browser without signing
+in. Use the existing admin account in a DIFFERENT browser/profile to manage fixtures.
+No profile or account is needed on the shared display.
 
-`/resources/RESOURCE_ID/kiosk`
+## Manual acceptance checklist
 
-No separate room-name lookup or first-100-resource search is needed: the status
-RPC returns the requested active room and its schedule in one response.
-If all test resources were archived earlier, restore their location and room first.
-
-## 4. Verify the complete reservation flow
-
-Use disposable accounts and rooms only:
-
-1. Create an active room and a future slot today, starting a few minutes from now.
-2. Open its kiosk in a second browser/profile and sign in with a test account.
-3. On the first browser, reserve that slot. Before its start, the kiosk should
-   show AVAILABLE with the upcoming booking time.
-4. When the slot starts, the screen should show BOOKED NOW. It should return to
-   AVAILABLE after cancellation (if permitted by booking rules) or when it ends.
-   Allow about ten seconds for booking changes, or use Refresh room status.
-5. Stop Flask or disconnect the display device. It must turn gray, not keep an
-   old green status. Restore access and confirm it recovers.
-6. Check an empty active room, an invalid room URL, an archived room and a room
-   under an archived location. Only the active room can show availability.
-7. Exit the kiosk and confirm Resource tab, My bookings, admin tools, history,
-   archive/restore and deletion still work.
-
-The kiosk is read-only: it never creates, cancels, checks in or deletes a booking.
-An archived room with active reservations should already be blocked by the
-existing management safeguards; don't bypass them for testing.
-
-## 5. Connect the iPad after hosting is ready
-
-The kiosk runs in a browser. The Mac can host and present simultaneously, while
-the iPad uses the Mac's address on the same permitted Wi-Fi/hotspot. Internet
-is still required for Supabase. Typing localhost on the iPad points to the iPad,
-not the Mac. Merely exposing Vite does not fix a frontend API base still set
-to 127.0.0.1:5000.
-
-The separate same-Mac hosting setup must be integrated/tested before claiming
-that this kiosk works across devices. This kiosk update does not install or
-expose a server, change firewall settings, or configure HTTPS.
-
-On the real iPad, verify portrait/landscape sizing, touch controls, sleep/wake,
-sign-in persistence, offline recovery and Safari behavior. Full screen is
-feature-detected; where unsupported, use Safari's Add to Home Screen for a
-standalone display if available. A fallback message does not stop the kiosk.
-Keep the device powered, awake and supervised for the demonstration. Exit and
-sign out afterward. It is not a hardened unattended device account.
-
-Use disposable accounts on any temporary trusted-LAN HTTP demo. Public or real
-user deployment needs HTTPS and a separate security/deployment review.
+- Signed-out visitor can view an active room and today’s schedule.
+- No names/emails/booking identifiers appear in the public API payload.
+- Archived/missing room and archived parent do not show availability.
+- Missing 007/API failure/offline/30-second staleness turns the screen gray.
+- Book a future slot from a separate device/account; it appears in the schedule,
+  turns red at its start, and returns green after permitted cancellation or expiry.
+- On a reachable frontend origin, scan the QR on a phone. It opens that exact room.
+- Signed-out phone requests sign-in; sign-in returns to the same room’s slots,
+  including for an administrator choosing to book personally.
+- Registration and confirmation-email links preserve that destination too.
+- Scanning alone creates nothing. Booking is rechecked by the existing server/SQL
+  safeguards; another person's booking cannot be overwritten by an old kiosk snapshot.
+- Do not enter credentials on the shared iPad. Test portrait/landscape, sleep/wake,
+  auto-refresh, fullscreen fallback and offline/reconnect on the actual iPad.
+- Verify ordinary bookings, admin tools, archive/restore and deletion still work.
 
 ## Automated checks
 
-```bash
+~~~bash
 npm --prefix frontend run lint
 npm --prefix frontend run test:kiosk
 npm --prefix frontend run build
 cd backend
 ./.venv/bin/python -m pytest -q
-cd ../database
-npm test
-```
+cd ..
+npm --prefix database test
+~~~
 
-The API suite mocks external HTTP. The database harness installs 001 through 006
-into a disposable local embedded PostgreSQL instance and checks privacy, active
-visibility, cancelled bookings, overnight slots, DST boundaries and permissions.
-It temporarily seeds historical reservations as the test owner, only inside that
-discardable database; never copy fixture setup to live SQL.
+Use backend's virtual environment and pytest configuration. Tests mock external API calls or use a
+fresh disposable embedded PostgreSQL database. They do not change live Supabase.
+The SQL harness exercises existing migrations first, then 007 to prove the old
+permissions remain protected. Historical fixtures are only for that disposable DB.
 
-Playwright adds kiosk route, cancellation display, offline/recovery and viewport
-scenarios using a disposable regular-user login and mocked room-status responses.
-See frontend/tests/e2e/README.md for credentials/configuration. Running --list is
-test discovery, not a passing browser test. Neither mocked browser tests nor the
-local SQL harness prove that physical iPad networking or live Supabase works.
-
-The review environment could not start the browser tests because its Playwright
-browser executable was missing. No browser/iPad pass is claimed. Install the
-browser and supply disposable test credentials on your own permitted test setup
-before running the actual browser suite.
+Public kiosk Playwright scenarios no longer require login credentials; booking
+workflow tests elsewhere still do. Test discovery is not browser execution.
+No automated browser or physical phone/iPad pass is claimed for this update.
+Actual QR scanning, email confirmation, networking, live permissions and deployment
+must be checked on the target setup before release. RFID, door control and real
+occupancy sensing are not included.

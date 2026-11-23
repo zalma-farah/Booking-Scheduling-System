@@ -17,8 +17,12 @@ export default function ReservationsManager() {
   const loading = result.key !== key
   useEffect(() => {
     let active = true
-    apiRequest(`/api/admin/bookings?status=${encodeURIComponent(status)}`)
-      .then(data => {
+    Promise.all([apiRequest(`/api/admin/bookings?status=${encodeURIComponent(status)}`),
+      apiRequest(`/api/admin/walk-ins?status=${encodeURIComponent(status)}`)])
+      .then(([account, guest]) => {
+        if (!Array.isArray(account.bookings) || !Array.isArray(guest.bookings)) throw new Error('Invalid reservation response.')
+        const data = { bookings: [...account.bookings, ...guest.bookings]
+          .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id).slice(0, 100) }
         if (!Array.isArray(data.bookings) || data.bookings.some(b => !b || !Number.isInteger(b.id) || !['active', 'cancelled'].includes(b.status))) {
           throw new Error('Invalid reservation response.')
         }
@@ -40,11 +44,11 @@ export default function ReservationsManager() {
           <div className="admin-table-scroll"><table className="admin-directory-table">
             <caption>Latest {result.rows.length} reservations - San Diego time (maximum 100)</caption>
             <thead><tr><th>Booking</th><th>Room</th><th>Time</th><th>Status / actions</th></tr></thead>
-            <tbody>{result.rows.map(b => <tr key={b.id}>
-              <td>#{b.id}</td><td>{b.slot?.resource?.name || 'Room unavailable'}<small>{b.slot?.resource?.location?.name}</small></td>
+            <tbody>{result.rows.map(b => <tr key={`${b.kind || 'account'}:${b.id}`}>
+              <td>{b.kind === 'walk_in' ? 'Walk-in reservation' : 'Account booking'} #{b.id}</td><td>{b.slot?.resource?.name || 'Room unavailable'}<small>{b.slot?.resource?.location?.name}</small></td>
               <td>{format(b.slot?.start_time)}<br />{format(b.slot?.end_time)}</td>
               <td>{b.status}{b.status === 'active' && <RecordAction key={`${b.id}:${key}`} responseKey="booking" recordId={b.id}
-                endpoint={`/api/admin/bookings/${b.id}/cancel`} label="Cancel reservation"
+                endpoint={`/api/admin/${b.kind === 'walk_in' ? 'walk-ins' : 'bookings'}/${b.id}/cancel`} label="Cancel reservation"
                 description={`Cancel reservation #${b.id}? History remains saved and the slot is released.`}
                 disabled={busy} onBusyChange={setBusy} onChanged={() => setVersion(v => v + 1)} />}</td>
             </tr>)}</tbody>

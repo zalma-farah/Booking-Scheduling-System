@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { LoaderCircle, UserPlus } from 'lucide-react'
-import { Link } from 'react-router'
+import { Link, useLocation } from 'react-router'
+import { safeBookingReturn } from '@/lib/booking-link'
 import { supabase } from '@/lib/supabase'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -8,6 +9,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 function RegisterPage() {
+  const location = useLocation()
+  const returnTo = safeBookingReturn(new URLSearchParams(location.search).get('next'))
+  const loginUrl = returnTo ? `/login?next=${encodeURIComponent(returnTo)}` : '/login'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -38,7 +42,7 @@ function RegisterPage() {
         email: email.trim(),
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/login`,
+          emailRedirectTo: `${window.location.origin}${loginUrl}`,
         },
       })
 
@@ -181,7 +185,7 @@ function RegisterPage() {
               Already have an account?{' '}
               <Link
                 className="font-semibold text-violet-700 hover:underline"
-                to="/login"
+                to={loginUrl}
               >
                 Sign in
               </Link>

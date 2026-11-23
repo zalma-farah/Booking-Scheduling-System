@@ -3,12 +3,38 @@ import { btree_gist } from '@electric-sql/pglite/contrib/btree_gist';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const base=fileURLToPath(new URL('../..', import.meta.url));
-const db=new PGlite({extensions:{btree_gist}});
+// This clock exists ONLY in a fresh, in-memory test database. Never copy this
+// harness/fixture SQL into Supabase. Production migrations remain unchanged.
+// Rewrite clock calls in SQL passed to this instance, including migrations,
+// triggers and fixtures, so every layer agrees on the same controlled instant.
+const engine=new PGlite({extensions:{btree_gist}});
+await engine.exec(`CREATE SCHEMA test_clock;
+CREATE FUNCTION test_clock.instant() RETURNS timestamptz LANGUAGE sql VOLATILE
+SET search_path='' AS $$ SELECT current_setting('test_clock.instant')::timestamptz $$;`);
+function testSql(sql) {
+  return sql.replace(/\b(?:pg_catalog\.)?(?:clock_timestamp|now)\s*\(\s*\)/gi,'test_clock.instant()');
+}
+function clocked(client) {
+  return {
+    exec: (sql,...args)=>client.exec(testSql(sql),...args),
+    query: (sql,...args)=>client.query(testSql(sql),...args),
+    transaction: callback=>client.transaction(tx=>callback(clocked(tx))),
+  };
+}
+const db=clocked(engine);
+async function setClock(instant) {
+  if (!Number.isFinite(Date.parse(instant))) throw new Error('Invalid test clock');
+  await engine.query("SELECT set_config('test_clock.instant',$1,false)",[instant]);
+}
+// Noon in San Diego; independent of the runner's actual date/time/timezone.
+await setClock('2026-11-22T20:00:00Z');
 await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE SCHEMA auth;
 CREATE TABLE auth.users(id uuid PRIMARY KEY,email text,raw_user_meta_data jsonb);
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 GRANT USAGE ON SCHEMA auth, public TO authenticated;
-GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;`);
+GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;
+GRANT USAGE ON SCHEMA test_clock TO anon,authenticated;
+GRANT EXECUTE ON FUNCTION test_clock.instant() TO anon,authenticated;`);
 for(const file of ['database/schema.sql','database/migrations/001_resource_availability.sql','database/migrations/002_booking_rules.sql','database/migrations/003_organization_access.sql','database/migrations/004_managed_operations.sql','database/migrations/005_safe_inventory_deletion.sql','database/migrations/006_room_kiosk_status.sql']){
   await db.exec(fs.readFileSync(base+'/'+file,'utf8'));console.log('APPLIED '+file);
 }
@@ -200,5 +226,115 @@ await db.transaction(async tx => {
   catch(error) { if(error.code!=='42501') throw error; }
 });
 ok(true,'anonymous caller cannot execute kiosk RPC');
-console.log(`${passed} database checks passed (embedded PostgreSQL, not live Supabase; concurrency not measured)`);
-await db.close();
+// 007 adds a SEPARATE public projection; 006 stays protected.
+await db.exec(fs.readFileSync(base+'/database/migrations/007_public_room_kiosk.sql','utf8'));
+console.log('APPLIED database/migrations/007_public_room_kiosk.sql');
+async function asAnon(sql) {
+  return db.transaction(async tx => {
+    await tx.exec("SET LOCAL ROLE anon; SELECT set_config('request.jwt.claim.sub','',true)");
+    return tx.query(sql);
+  });
+}
+async function anonDenied(sql, code, label) {
+  try { await asAnon(sql); }
+  catch(error) { if(error.code!==code) throw error; ok(true,label); return; }
+  throw new Error('NOT DENIED '+label);
+}
+const publicStatus=(await asAnon('SELECT public.get_public_room_kiosk_status(40) AS result')).rows[0].result;
+ok(publicStatus.resource.id===40,'anonymous visitor can view active room');
+ok(publicStatus.slots.map(s=>s.id).join(',')==='61,62,63','public schedule only contains active today/overnight slots');
+ok(publicStatus.slots[0].is_booked===true&&publicStatus.slots[2].is_booked===false,'public schedule distinguishes active and cancelled bookings');
+ok(Object.keys(publicStatus).sort().join(',')==='checked_at,day_end,day_start,resource,slots,timezone','public top-level fields are allowlisted');
+ok(Object.keys(publicStatus.resource).sort().join(',')==='id,location,name'&&Object.keys(publicStatus.resource.location).sort().join(',')==='id,name','public room/location fields are allowlisted');
+ok(publicStatus.slots.every(s=>Object.keys(s).sort().join(',')==='end_time,id,is_booked,start_time'),'public slots expose no identities or booking IDs');
+ok((await asAnon('SELECT public.get_public_room_kiosk_status(41) AS result')).rows[0].result.slots.length===0,'public empty schedule remains valid');
+for(const id of [42,43,99999]) await anonDenied(`SELECT public.get_public_room_kiosk_status(${id})`,'P0002','public archived/hidden/missing room rejected '+id);
+for(const id of ['0','NULL','9007199254740992']) await anonDenied(`SELECT public.get_public_room_kiosk_status(${id})`,'22023','public invalid room rejected '+id);
+await anonDenied('SELECT public.get_room_kiosk_status(40)','42501','006 authenticated kiosk remains protected');
+await anonDenied('SELECT * FROM public.kiosk_day_bounds(clock_timestamp())','42501','public caller cannot use private helper');
+for(const table of ['profiles','bookings','resources','locations','time_slots']) {
+  await anonDenied(`SELECT * FROM public.${table}`,'42501','no anonymous direct reads of '+table);
+}
+await anonDenied('INSERT INTO public.bookings(user_id,time_slot_id) VALUES(NULL,61)','42501','no anonymous booking writes');
+await anonDenied('UPDATE public.resources SET is_active=false WHERE id=40','42501','no anonymous inventory updates');
+ok((await asUser(3,'SELECT public.get_public_room_kiosk_status(40) AS result')).rows[0].result.resource.id===40,'signed-in caller may use public projection too');
+await db.exec(fs.readFileSync(base+'/database/migrations/008_guest_walk_in.sql','utf8'));
+console.log('APPLIED database/migrations/008_guest_walk_in.sql');
+await db.exec(`INSERT INTO public.resources(id,location_id,name,is_active) VALUES
+  (90,11,'Walk-in fixture',true),(91,11,'No hours fixture',true),(92,12,'UCSD walk-in fixture',true),(93,11,'Archived walk-in fixture',false);
+INSERT INTO public.time_slots(id,resource_id,start_time,end_time) VALUES
+  (90,90,clock_timestamp()-interval '1 hour',clock_timestamp()+interval '30 minutes'),
+  (91,90,clock_timestamp()+interval '30 minutes 1 second',clock_timestamp()+interval '3 hours'),
+  (92,92,clock_timestamp()-interval '1 hour',clock_timestamp()+interval '3 hours');
+-- Exact adjacency for spanning-window tests, only in the disposable test DB.
+ALTER TABLE public.time_slots DISABLE TRIGGER guard_slot_update;
+UPDATE public.time_slots SET start_time=(SELECT end_time FROM public.time_slots WHERE id=90) WHERE id=91;
+ALTER TABLE public.time_slots ENABLE TRIGGER guard_slot_update;`);
+const quote=(await asAnon('SELECT public.get_walk_in_window(90) AS result')).rows[0].result;
+ok(quote.available_until!==null&&quote.max_minutes===120,'walk-in opens only inside enabled hours');
+ok(!('source_slot_id' in quote),'public quote hides internal source slot');
+ok((await asAnon('SELECT public.get_walk_in_window(91) AS result')).rows[0].result.available_until===null,'no slots means no walk-in despite green display');
+await anonDenied('SELECT public.get_walk_in_window(93)','P0002','archived room cannot offer walk-in');
+await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '3 hours','10000000-0000-4000-8000-000000000001')",'23514','walk-in cannot exceed two hours');
+await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '1 minute','10000000-0000-4000-8000-000000000001')",'23514','walk-in minimum five minutes');
+await anonDenied("SELECT public.create_guest_walk_in(91,clock_timestamp()+interval '10 minutes','10000000-0000-4000-8000-000000000001')",'23514','walk-in cannot create availability');
+const end=new Date(Date.parse(quote.checked_at)+90*60000).toISOString();
+const requestId='10000000-0000-4000-8000-000000000010';
+const reserve=`SELECT public.create_guest_walk_in(90,'${end}','${requestId}') AS result`;
+const receipt=(await asAnon(reserve)).rows[0].result;
+ok(receipt.status==='active'&&receipt.resource_id===90,'guest walk-in saves without an account');
+ok(Object.keys(receipt).sort().join(',')==='end_time,request_id,resource_id,start_time,status','guest receipt exposes no account or database booking IDs');
+ok((await asAnon(reserve)).rows[0].result.start_time===receipt.start_time,'same confirmation is idempotent');
+ok(Number((await db.query('SELECT count(*) AS n FROM public.walk_in_bookings')).rows[0].n)===1,'retry does not duplicate reservation');
+await anonDenied(`SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '10 minutes','${requestId}')`,'22023','same key cannot change duration');
+await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '10 minutes','10000000-0000-4000-8000-000000000011')",'23514','second guest cannot overlap first');
+ok((await asAnon('SELECT public.get_walk_in_window(90) AS result')).rows[0].result.available_until===null,'reserved room stops offering walk-in');
+const withGuest=(await asAnon('SELECT public.get_public_room_kiosk_status(90) AS result')).rows[0].result;
+const observed=Date.parse(withGuest.checked_at);
+ok(withGuest.slots.some(s=>s.is_booked&&Date.parse(s.start_time)<=observed&&observed<Date.parse(s.end_time)),'public kiosk becomes booked for guest period');
+ok(withGuest.slots.some(s=>!s.is_booked&&Date.parse(s.start_time)>=Date.parse(end)),'guest does not mark remaining enabled hours booked');
+ok((await asUser(3,'SELECT * FROM public.get_resource_availability(90)')).rows[0].is_available===false,'account availability sees guest overlap in future adjacent slot');
+ok((await asUser(1,'SELECT public.managed_guest_blocked_slots(ARRAY[90,91]::bigint[]) AS result')).rows[0].result.length===2,'admin availability marks all guest-covered slots blocked');
+ok((await asUser(2,'SELECT public.managed_guest_blocked_slots(ARRAY[90,91]::bigint[]) AS result')).rows[0].result.length===0,'other university cannot inspect guest-blocked slots');
+await denied(3,'INSERT INTO public.bookings(user_id,time_slot_id) VALUES(auth.uid(),91)','account booking cannot overlap guest interval','23514');
+await denied(1,'UPDATE public.resources SET is_active=false WHERE id=90','guest prevents room archive','23514');
+await denied(1,'UPDATE public.locations SET is_active=false WHERE id=11','guest prevents location archive','23514');
+await denied(1,'SELECT public.set_managed_slot_active(91,false)','guest prevents future covered-slot disable','23514');
+await anonDenied('SELECT * FROM public.walk_in_bookings','42501','guest cannot list guest records');
+await anonDenied('DELETE FROM public.walk_in_bookings','42501','guest cannot remove history');
+await anonDenied('SELECT public.walk_in_window(90)','42501','private walk-in helper is not executable');
+await anonDenied("SELECT public.list_managed_walk_ins('all')",'42501','guest cannot list admin reservations');
+const guestId=(await db.query(`SELECT id FROM public.walk_in_bookings WHERE request_id='${requestId}'`)).rows[0].id;
+await anonDenied(`SELECT public.cancel_managed_walk_in(${guestId})`,'42501','guest cannot cancel reservations');
+await denied(2,`SELECT public.cancel_managed_walk_in(${guestId})`,'other university cannot cancel walk-in');
+await denied(3,`SELECT public.cancel_managed_walk_in(${guestId})`,'regular user cannot cancel walk-in');
+ok((await asUser(1,"SELECT public.list_managed_walk_ins('all') AS result")).rows[0].result[0].kind==='walk_in','own admin sees Walk-in reservation label');
+ok((await asUser(2,"SELECT public.list_managed_walk_ins('all') AS result")).rows[0].result.length===0,'other university does not see walk-in');
+await asUser(1,`SELECT public.cancel_managed_walk_in(${guestId})`);
+ok((await asAnon(reserve)).rows[0].result.status==='cancelled','retry after admin cancellation does not recreate booking');
+ok((await asAnon('SELECT public.get_walk_in_window(90) AS result')).rows[0].result.available_until!==null,'admin cancellation releases walk-in period');
+await asUser(3,'INSERT INTO public.bookings(user_id,time_slot_id) VALUES(auth.uid(),91)');
+ok((await asAnon('SELECT public.get_walk_in_window(90) AS result')).rows[0].result.available_until!==null,'current free window remains before next account booking');
+await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '45 minutes','10000000-0000-4000-8000-000000000012')",'23514','walk-in cannot cross next account reservation');
+const listed=(await asAnon('SELECT public.list_walk_in_rooms(0) AS result')).rows[0].result;
+ok(listed.rooms.some(r=>r.id===90)&&!listed.rooms.some(r=>r.id===93),'public room directory only shows active inventory');
+ok(listed.rooms.every(r=>Object.keys(r).sort().join(',')==='id,location,name'),'public directory has no private details');
+// Regression: a real 23:00 run used to request 90 minutes past midnight and
+// incorrectly fail CI. Keep the business rule and exercise both outcomes.
+await db.exec(`INSERT INTO public.resources(id,location_id,name) VALUES(94,11,'Midnight clock regression');
+INSERT INTO public.time_slots(id,resource_id,start_time,end_time) VALUES
+(94,94,'2026-11-23T05:00:00Z','2026-11-23T10:00:00Z');`);
+await setClock('2026-11-23T07:00:00Z'); // 23:00 PST
+const late=(await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result;
+ok(Date.parse(late.available_until)===Date.parse('2026-11-23T08:00:00Z'),'23:00 quote stops exactly at San Diego midnight');
+await anonDenied("SELECT public.create_guest_walk_in(94,'2026-11-23T08:30:00Z','20000000-0000-4000-8000-000000000001')",'23514','23:00 rejects a 90-minute booking across midnight');
+const midnightReceipt=(await asAnon("SELECT public.create_guest_walk_in(94,'2026-11-23T08:00:00Z','20000000-0000-4000-8000-000000000002') AS result")).rows[0].result;
+ok(midnightReceipt.status==='active'&&Date.parse(midnightReceipt.end_time)===Date.parse(late.available_until),'23:00 permits booking exactly until midnight');
+const midnightId=(await db.query("SELECT id FROM public.walk_in_bookings WHERE request_id='20000000-0000-4000-8000-000000000002'")).rows[0].id;
+await asUser(1,`SELECT public.cancel_managed_walk_in(${midnightId})`);
+await setClock('2026-11-23T07:58:00Z'); // 23:58 PST
+ok((await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result.available_until===null,'23:58 offers no period shorter than five minutes before midnight');
+await setClock('2026-11-23T08:00:00Z'); // New San Diego day
+ok((await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result.available_until!==null,'new day can offer the next enabled period');
+console.log(`${passed} database checks passed (embedded PostgreSQL, not live Supabase; controlled test clock; concurrency not measured)`);
+await engine.close();
