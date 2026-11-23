@@ -3,12 +3,38 @@ import { btree_gist } from '@electric-sql/pglite/contrib/btree_gist';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const base=fileURLToPath(new URL('../..', import.meta.url));
-const db=new PGlite({extensions:{btree_gist}});
+// This clock exists ONLY in a fresh, in-memory test database. Never copy this
+// harness/fixture SQL into Supabase. Production migrations remain unchanged.
+// Rewrite clock calls in SQL passed to this instance, including migrations,
+// triggers and fixtures, so every layer agrees on the same controlled instant.
+const engine=new PGlite({extensions:{btree_gist}});
+await engine.exec(`CREATE SCHEMA test_clock;
+CREATE FUNCTION test_clock.instant() RETURNS timestamptz LANGUAGE sql VOLATILE
+SET search_path='' AS $$ SELECT current_setting('test_clock.instant')::timestamptz $$;`);
+function testSql(sql) {
+  return sql.replace(/\b(?:pg_catalog\.)?(?:clock_timestamp|now)\s*\(\s*\)/gi,'test_clock.instant()');
+}
+function clocked(client) {
+  return {
+    exec: (sql,...args)=>client.exec(testSql(sql),...args),
+    query: (sql,...args)=>client.query(testSql(sql),...args),
+    transaction: callback=>client.transaction(tx=>callback(clocked(tx))),
+  };
+}
+const db=clocked(engine);
+async function setClock(instant) {
+  if (!Number.isFinite(Date.parse(instant))) throw new Error('Invalid test clock');
+  await engine.query("SELECT set_config('test_clock.instant',$1,false)",[instant]);
+}
+// Noon in San Diego; independent of the runner's actual date/time/timezone.
+await setClock('2026-11-22T20:00:00Z');
 await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE SCHEMA auth;
 CREATE TABLE auth.users(id uuid PRIMARY KEY,email text,raw_user_meta_data jsonb);
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 GRANT USAGE ON SCHEMA auth, public TO authenticated;
-GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;`);
+GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;
+GRANT USAGE ON SCHEMA test_clock TO anon,authenticated;
+GRANT EXECUTE ON FUNCTION test_clock.instant() TO anon,authenticated;`);
 for(const file of ['database/schema.sql','database/migrations/001_resource_availability.sql','database/migrations/002_booking_rules.sql','database/migrations/003_organization_access.sql','database/migrations/004_managed_operations.sql','database/migrations/005_safe_inventory_deletion.sql','database/migrations/006_room_kiosk_status.sql']){
   await db.exec(fs.readFileSync(base+'/'+file,'utf8'));console.log('APPLIED '+file);
 }
@@ -252,7 +278,7 @@ await anonDenied('SELECT public.get_walk_in_window(93)','P0002','archived room c
 await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '3 hours','10000000-0000-4000-8000-000000000001')",'23514','walk-in cannot exceed two hours');
 await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interval '1 minute','10000000-0000-4000-8000-000000000001')",'23514','walk-in minimum five minutes');
 await anonDenied("SELECT public.create_guest_walk_in(91,clock_timestamp()+interval '10 minutes','10000000-0000-4000-8000-000000000001')",'23514','walk-in cannot create availability');
-const end=new Date(Date.now()+90*60000).toISOString();
+const end=new Date(Date.parse(quote.checked_at)+90*60000).toISOString();
 const requestId='10000000-0000-4000-8000-000000000010';
 const reserve=`SELECT public.create_guest_walk_in(90,'${end}','${requestId}') AS result`;
 const receipt=(await asAnon(reserve)).rows[0].result;
@@ -293,5 +319,22 @@ await anonDenied("SELECT public.create_guest_walk_in(90,clock_timestamp()+interv
 const listed=(await asAnon('SELECT public.list_walk_in_rooms(0) AS result')).rows[0].result;
 ok(listed.rooms.some(r=>r.id===90)&&!listed.rooms.some(r=>r.id===93),'public room directory only shows active inventory');
 ok(listed.rooms.every(r=>Object.keys(r).sort().join(',')==='id,location,name'),'public directory has no private details');
-console.log(`${passed} database checks passed (embedded PostgreSQL, not live Supabase; concurrency not measured)`);
-await db.close();
+// Regression: a real 23:00 run used to request 90 minutes past midnight and
+// incorrectly fail CI. Keep the business rule and exercise both outcomes.
+await db.exec(`INSERT INTO public.resources(id,location_id,name) VALUES(94,11,'Midnight clock regression');
+INSERT INTO public.time_slots(id,resource_id,start_time,end_time) VALUES
+(94,94,'2026-11-23T05:00:00Z','2026-11-23T10:00:00Z');`);
+await setClock('2026-11-23T07:00:00Z'); // 23:00 PST
+const late=(await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result;
+ok(Date.parse(late.available_until)===Date.parse('2026-11-23T08:00:00Z'),'23:00 quote stops exactly at San Diego midnight');
+await anonDenied("SELECT public.create_guest_walk_in(94,'2026-11-23T08:30:00Z','20000000-0000-4000-8000-000000000001')",'23514','23:00 rejects a 90-minute booking across midnight');
+const midnightReceipt=(await asAnon("SELECT public.create_guest_walk_in(94,'2026-11-23T08:00:00Z','20000000-0000-4000-8000-000000000002') AS result")).rows[0].result;
+ok(midnightReceipt.status==='active'&&Date.parse(midnightReceipt.end_time)===Date.parse(late.available_until),'23:00 permits booking exactly until midnight');
+const midnightId=(await db.query("SELECT id FROM public.walk_in_bookings WHERE request_id='20000000-0000-4000-8000-000000000002'")).rows[0].id;
+await asUser(1,`SELECT public.cancel_managed_walk_in(${midnightId})`);
+await setClock('2026-11-23T07:58:00Z'); // 23:58 PST
+ok((await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result.available_until===null,'23:58 offers no period shorter than five minutes before midnight');
+await setClock('2026-11-23T08:00:00Z'); // New San Diego day
+ok((await asAnon('SELECT public.get_walk_in_window(94) AS result')).rows[0].result.available_until!==null,'new day can offer the next enabled period');
+console.log(`${passed} database checks passed (embedded PostgreSQL, not live Supabase; controlled test clock; concurrency not measured)`);
+await engine.close();
