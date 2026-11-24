@@ -189,7 +189,7 @@ function ResourcesPage() {
                                         </h3>
 
                                         <p className="mt-1 text-sm text-[#567058]">
-                                            {resource.location?.name}
+                                            {resource.location?.name || 'Location not specified'}
                                         </p>
                                     </div>
                                 </div>
